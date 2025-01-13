@@ -65,7 +65,7 @@ class CirclesFeature():
         ImgHeight, ImgWidth, ImgChannels = img.shape
         img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         ret, img_thresh = cv2.threshold(img_gray,0,255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
-        ret, contours, hierarchy = cv2.findContours(img_thresh,cv2.RETR_LIST,cv2.CHAIN_APPROX_NONE)     #RETR_CCOMP
+        contours, hierarchy = cv2.findContours(img_thresh,cv2.RETR_LIST,cv2.CHAIN_APPROX_NONE)     #RETR_CCOMP
         return contours
 
     @staticmethod

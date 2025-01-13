@@ -35,7 +35,8 @@ class ArrowHeadsFeature():
         erosion = cv2.erode(arrows_image, kernel)
         dilated = cv2.dilate(erosion, kernel)
         
-        _im,contour,hierarchy = cv2.findContours(dilated,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+        # _im,contour,hierarchy = cv2.findContours(dilated,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+        contour, hierarchy = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         empty_image = erosion.copy()
         empty_image.fill(0)

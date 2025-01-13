@@ -127,7 +127,7 @@ class LineSegmentsFeature():
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
         corners = cv2.goodFeaturesToTrack(gray, numCorners, qualityOfCorner, minElucDistance, useHarrisDetector = useHarris)
-        corners = np.int0(corners)
+        corners = np.int32(corners)
 
         points = []
         for i in corners:

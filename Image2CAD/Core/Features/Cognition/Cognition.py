@@ -443,7 +443,7 @@ class Cognition():
                 cornerImg = TempImg.copy()
                 gray = cv2.cvtColor(TempImg,cv2.COLOR_BGR2GRAY)
                 corners = cv2.goodFeaturesToTrack(gray,20,0.09,10, True)
-                corners = np.int0(corners)
+                corners = np.int32(corners)
                 cornerPts = []
                 xpts = []
                 ypts = []

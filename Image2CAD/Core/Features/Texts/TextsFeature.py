@@ -125,12 +125,15 @@ class TextsFeature:
     @staticmethod
     def RotateByAngle(new_img, angle, make_dir_rotate, i ):
         rotate_img = cv2.cvtColor(new_img, cv2.COLOR_BGR2GRAY)
-        rotate_img = ImgTransform.ImgRotate(rotate_img,angle,1)
-        rotate_img = ImgTransform.ImgAspectResize(rotate_img,800,800)
-        output_img_path = make_dir_rotate + "/rotate" + str(i) + ".png"
+        rotate_img = ImgTransform.ImgRotate(rotate_img, angle, 1)
+        rotate_img = ImgTransform.ImgAspectResize(rotate_img, 800, 800)
+        output_img_path = os.path.join(make_dir_rotate, f"rotate{i}.png")
         cv2.imwrite(output_img_path, rotate_img)
-        detected_text = pytesseract.image_to_string(Image.open(output_img_path), config="-psm 6") #, lang='eng+eng13'
-               
+
+        # 确保使用绝对路径
+        output_img_path = os.path.abspath(output_img_path)
+        detected_text = pytesseract.image_to_string(Image.open(output_img_path), config="--psm 6")
+
         return output_img_path, detected_text
     
     @staticmethod

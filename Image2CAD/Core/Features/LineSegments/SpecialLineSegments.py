@@ -224,14 +224,14 @@ class SpecialLineSegments:
                     line_pixel_array[ : , 1 ] = np.arange(p1y - 1 , p1y - absolute_vertical_projection - 1 , -1)
                 else:
                     line_pixel_array[ : , 1 ] = np.linspace(p1y + 1 , p1y + absolute_vertical_projection + 1, number)
-                line_pixel_array[ : , 0 ] = (slope * (line_pixel_array[ : , 1] - p1y)).astype(np.int) + p1x         
+                line_pixel_array[ : , 0 ] = (slope * (line_pixel_array[ : , 1] - p1y)).astype(np.int32) + p1x         
             else:
                 slope = vertical_projection.astype(np.float32) / horizontal_projection.astype(np.float32)
                 if negative_X:
                     line_pixel_array[ : , 0 ] = np.arange(p1x - 1 , p1x - absolute_horizontal_projection - 1 , -1)
                 else:
                     line_pixel_array[ : , 0] = np.linspace(p1x + 1, p1x + absolute_horizontal_projection + 1, num = number)
-                line_pixel_array[ : , 1] = (slope * (line_pixel_array[ : , 0] - p1x)).astype(np.int) + p1y          
+                line_pixel_array[ : , 1] = (slope * (line_pixel_array[ : , 0] - p1x)).astype(np.int32) + p1y          
 
         X_Coordinate_Array = line_pixel_array[ : , 0]
         Y_Coordinate_Array = line_pixel_array[ : , 1]

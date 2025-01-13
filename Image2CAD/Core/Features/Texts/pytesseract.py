@@ -57,8 +57,8 @@ CONTRIBUTERS:
 '''
 
 # CHANGE THIS IF TESSERACT IS NOT IN YOUR PATH, OR IS NAMED DIFFERENTLY
-tesseract_cmd = 'C:/Program Files (x86)/Tesseract-OCR/tesseract.exe'
-tessdata_dir_config = ' --tessdata-dir "C:/Program Files (x86)/Tesseract-OCR/tessdata"'
+tesseract_cmd = 'E:/Program Files/Tesseract-OCR/tesseract.exe'
+tessdata_dir_config = ' --tessdata-dir "E:/Program Files/Tesseract-OCR/tessdata"'
 
 try:
     import Image
@@ -107,9 +107,9 @@ def get_errors(error_string):
     returns all lines in the error_string that start with the string "error"
 
     '''
-
+    error_string = error_string.decode('utf-8') 
     lines = error_string.splitlines()
-    error_lines = tuple(line for line in lines if line.find('Error') >= 0)
+    error_lines = tuple(line for line in lines if 'Error' in line)
     if len(error_lines) > 0:
         return '\n'.join(error_lines)
     else:
