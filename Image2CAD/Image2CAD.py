@@ -11,8 +11,29 @@ import cv2
 import time
 import os
 import sys
+import numpy as np
 
 global make_dir_root, timestr
+
+def is_background_white(image):
+    # 获取图像的高度和宽度
+    height, width, _ = image.shape
+    
+    # 获取图像四个角的颜色
+    corners = [
+        image[0, 0],  # 左上角
+        image[0, width - 1],  # 右上角
+        image[height - 1, 0],  # 左下角
+        image[height - 1, width - 1]  # 右下角
+    ]
+    
+    # 计算四个角的平均颜色
+    average_color = np.mean(corners, axis=0)
+    # 判断背景颜色是否接近白色
+    return np.all(average_color > 200)
+
+def invert_image_colors(image):
+    return cv2.bitwise_not(image)
 
 def main(argv1):
 
@@ -57,6 +78,11 @@ def main(argv1):
     FM._ImagePath = img_path
     FM._RootDirectory = make_dir_root
     img = cv2.imread(FM._ImagePath)
+    
+    # 判断背景是否为白色，如果不是则进行反色处理
+    if not is_background_white(img):
+        img = invert_image_colors(img)
+        
     FM._ImageOriginal = img
     FM._ImageCleaned = img.copy()
     FM._ImageDetectedDimensionalText = img.copy()

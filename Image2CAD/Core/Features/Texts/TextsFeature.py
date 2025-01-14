@@ -95,10 +95,21 @@ class TextsFeature:
         roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         ret, mask = cv2.threshold(roi_gray, 10, 255, cv2.THRESH_BINARY)
         mask_inv = cv2.bitwise_not(mask)
+        # Ensure mask_inv is the same size as New_Img_roi
+        mask_inv = cv2.resize(mask_inv, (New_Img_roi.shape[1], New_Img_roi.shape[0]))
+        # Ensure New_Img_roi has the same number of channels as roi
+        New_Img_roi = cv2.cvtColor(New_Img_roi, cv2.COLOR_BGR2GRAY)
         New_Img_bg = cv2.bitwise_and(New_Img_roi, New_Img_roi, mask = mask_inv)
         New_Img_fg = cv2.bitwise_and(roi, roi, mask = mask)
+        # Convert New_Img_bg back to BGR
+        New_Img_bg = cv2.cvtColor(New_Img_bg, cv2.COLOR_GRAY2BGR)
+        # Ensure New_Img_bg and New_Img_fg have the same size
+        New_Img_bg = cv2.resize(New_Img_bg, (New_Img_fg.shape[1], New_Img_fg.shape[0]))
         dst = cv2.add(New_Img_bg, New_Img_fg)
-        new_img[150:150+rows, 150:150+cols ] = dst
+         # Ensure the destination area is within the bounds of new_img
+        end_row = min(150 + rows, new_img.shape[0])
+        end_col = min(150 + cols, new_img.shape[1])
+        new_img[150:end_row, 150:end_col] = dst[:end_row-150, :end_col-150]
 
         return new_img
     
