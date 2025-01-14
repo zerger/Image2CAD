@@ -91,7 +91,7 @@ def main(argv1):
     
     AD_Time = time.strftime("%H hr - %M min - %S sec")
     print("Arrow Detection Started at " + AD_Time + "...")
-    BB_Arrows, Arrow_Img = ArrowHeadsFeature.Detect(FM)
+    BB_Arrows, Arrow_Img = ArrowHeadsFeature.Detect(FM, 35, 70)
     FM._DetectedArrowHead = BB_Arrows
     FM._ImageDetectedArrow = Arrow_Img
     print("Arrow Detection Complete...")

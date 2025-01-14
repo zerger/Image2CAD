@@ -18,13 +18,13 @@ from xml.etree.ElementTree import Element, SubElement
 class ArrowHeadsFeature():
 
     @staticmethod
-    def Detect(Feature_Manager):
+    def Detect(Feature_Manager, area_min=35, area_max=70):
         img = Feature_Manager._ImageOriginal.copy()
         
         gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         ret2,Threshold = cv2.threshold(gray_img,0,255,cv2.THRESH_BINARY|cv2.THRESH_OTSU)
         
-        kernel = np.ones((2,2),np.uint8)
+        kernel = np.ones((1,1),np.uint8)
         blackhat = cv2.morphologyEx(Threshold, cv2.MORPH_BLACKHAT, kernel)
 
         InvThreshold = cv2.bitwise_not(Threshold)
@@ -45,7 +45,7 @@ class ArrowHeadsFeature():
         for i in range(0, len(contour)):
             area = cv2.contourArea(contour[i])
 
-            if (area > 35 and area <= 70): 
+            if area_min < area <= area_max: 
                 x,y,w,h = cv2.boundingRect(contour[i])
                 P1 = Point2(int(x-3), int(y-3))
                 P2 = Point2(int(x+w+2), int(y+h+2))
