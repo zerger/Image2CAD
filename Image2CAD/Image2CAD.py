@@ -95,8 +95,17 @@ def main(argv1):
     FM._DetectedArrowHead = BB_Arrows
     FM._ImageDetectedArrow = Arrow_Img
     print("Arrow Detection Complete...")
-    cv2.imshow("Detected Arrows", FM._ImageDetectedArrow)
-    cv2.waitKey(0)
+    
+    # 定义一个窗口名称
+    WINDOW_NAME = "测试窗口"    
+    # 初始化窗口（可选：指定窗口大小或其他属性）
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+    # 显示图像并刷新内容
+    cv2.imshow(WINDOW_NAME, FM._ImageDetectedArrow)
+    cv2.setWindowTitle(WINDOW_NAME, "Detected Arrows")
+    cv2.waitKey(0)  # 设置 5秒的延迟以刷新内容   
+    # cv2.imshow("Detected Arrows", FM._ImageDetectedArrow)
+    # cv2.waitKey(0)
     
     for i in BB_Arrows:
         P1 = i._BoundingBoxP1
@@ -109,8 +118,9 @@ def main(argv1):
     segments, DimensionalLine_Img = DimensionalLinesFeature.Detect(FM)
     FM._ImageDetectedDimensionalLine = DimensionalLine_Img
     FM._DetectedDimensionalLine = segments
-    print("Dimensional Line Detection Complete...")
-    cv2.imshow("Detected Dimensional Lines", FM._ImageDetectedDimensionalLine)
+    print("Dimensional Line Detection Complete...")  
+    cv2.imshow(WINDOW_NAME, FM._ImageDetectedDimensionalLine)
+    cv2.setWindowTitle(WINDOW_NAME, "Detected Dimensional Lines")
     cv2.waitKey(0)
 
     for j in segments:
@@ -129,8 +139,9 @@ def main(argv1):
     ExtractedTextArea, TextArea_Img = TextsFeature.Detect(FM)
     FM._ImageDetectedDimensionalText = TextArea_Img
     FM._DetectedDimensionalText = ExtractedTextArea
-    print("Text Area Extraction Complete...")
-    cv2.imshow("Detected Text Area", FM._ImageDetectedDimensionalText)
+    print("Text Area Extraction Complete...") 
+    cv2.imshow(WINDOW_NAME, FM._ImageDetectedDimensionalText)
+    cv2.setWindowTitle(WINDOW_NAME, "Detected Text Area")
     cv2.waitKey(0)
 
     for i in ExtractedTextArea:
@@ -150,8 +161,9 @@ def main(argv1):
     segments, DetectedLine_Img = LineSegmentsFeature.Detect(FM)
     FM._DetectedLine = segments
     FM._ImageDetectedLine = DetectedLine_Img
-    print("Line Detection Complete...")
-    cv2.imshow("Detected Lines", FM._ImageDetectedLine)
+    print("Line Detection Complete...")    
+    cv2.imshow(WINDOW_NAME, FM._ImageDetectedLine)
+    cv2.setWindowTitle(WINDOW_NAME, "Detected Lines")
     cv2.waitKey(0)
 
     print("Correlation of Support Lines Started...")
@@ -182,8 +194,9 @@ def main(argv1):
     detectedcircle, DetectedCircle_Img = CirclesFeature.Detect(FM)
     FM._ImageDetectedCircle = DetectedCircle_Img
     FM._DetectedCircle = detectedcircle
-    print("Circle Detection Complete...")
-    cv2.imshow("Detected circles", FM._ImageDetectedCircle)
+    print("Circle Detection Complete...")   
+    cv2.imshow(WINDOW_NAME, FM._ImageDetectedCircle)
+    cv2.setWindowTitle(WINDOW_NAME, "Detected circles")
     cv2.waitKey(0)
 
     for i in detectedcircle:

@@ -1,4 +1,6 @@
 @echo off
+@REM  将控制台字符集切换为 UTF-8。
+chcp 65001 >nul
 REM 设置 Tesseract 的安装路径
 set TESSERACT_DIR=E:\Program Files\Tesseract-OCR
 
