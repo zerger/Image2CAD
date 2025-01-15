@@ -57,8 +57,8 @@ CONTRIBUTERS:
 '''
 
 # CHANGE THIS IF TESSERACT IS NOT IN YOUR PATH, OR IS NAMED DIFFERENTLY
-tesseract_cmd = 'E:/Program Files/Tesseract-OCR/tesseract.exe'
-tessdata_dir_config = ' --tessdata-dir "E:/Program Files/Tesseract-OCR/tessdata"'
+# tesseract_cmd = 'E:/Program Files/Tesseract-OCR/tesseract.exe'
+# tessdata_dir_config = ' --tessdata-dir "E:/Program Files/Tesseract-OCR/tessdata"'
 
 try:
     import Image
@@ -69,6 +69,20 @@ import sys
 import tempfile
 import os
 import shlex
+
+# Determine base directory
+if getattr(sys, 'frozen', False):
+    base_dir = sys._MEIPASS  # Temp folder where PyInstaller extracts files
+else:
+    base_dir = 'E:/Program Files/Tesseract-OCR'
+
+# 设置 Tesseract 的可执行文件路径
+tesseract_cmd = os.path.join(base_dir, "tesseract.exe")
+# 设置 tessdata 目录配置
+tessdata_dir_config = f' --tessdata-dir "{os.path.join(base_dir, "tessdata")}"'
+
+# tesseract_cmd = 'E:/Program Files/Tesseract-OCR/tesseract.exe'
+# tessdata_dir_config = ' --tessdata-dir "E:/Program Files/Tesseract-OCR/tessdata"'
 
 __all__ = ['image_to_string']
 

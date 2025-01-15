@@ -24,7 +24,7 @@ class ArrowHeadsFeature():
         gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         ret2,Threshold = cv2.threshold(gray_img,0,255,cv2.THRESH_BINARY|cv2.THRESH_OTSU)
         
-        kernel = np.ones((1,1),np.uint8)
+        kernel = np.ones((2,2),np.uint8)
         blackhat = cv2.morphologyEx(Threshold, cv2.MORPH_BLACKHAT, kernel)
 
         InvThreshold = cv2.bitwise_not(Threshold)
