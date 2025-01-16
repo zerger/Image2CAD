@@ -11,7 +11,7 @@ REM 打包的主脚本
 set MAIN_SCRIPT=image2cad.py
 
 REM 输出的 EXE 名称
-set OUTPUT_NAME=image2cad.exe
+set OUTPUT_NAME=image2cad
 
 REM 定义资源路径（DLL、tesseract.exe 和 tessdata）
 set ADD_DLLS=%TESSERACT_DIR%\*.dll;.
@@ -21,7 +21,7 @@ set ADD_TESSDATA_CHI=%TESSERACT_DIR%\tessdata\chi_sim.traineddata;.\tessdata
 set ADD_TESSDATA_OSD=%TESSERACT_DIR%\tessdata\osd.traineddata;.\tessdata
 
 REM 打包命令
-pyinstaller --onefile --name %OUTPUT_NAME% ^
+pyinstaller --name %OUTPUT_NAME% ^
 --add-data "%ADD_DLLS%" ^
 --add-data "%ADD_TESSERACT%" ^
 --add-data "%ADD_TESSDATA_ENG%" ^
