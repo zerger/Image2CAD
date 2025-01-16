@@ -4,7 +4,59 @@ import os
 import sys
 import numpy as np
 import builtins
-from PIL import ImageFont
+from PIL import ImageFont, Image, ImageTk
+import tkinter as tk
+
+
+# 选择 GUI 库的开关
+USE_OPENCV = False  # 切换为 False 使用 Tkinter
+
+# OpenCV 显示图像
+# 全局变量，记录窗口是否已创建
+window_created = False
+
+def show_image_opencv(image, title):
+    global window_created
+    # 定义一个窗口名称
+    WINDOW_NAME = "测试窗口"    
+
+    # 检查窗口是否已经创建
+    if not window_created:
+        # 初始化窗口（只在第一次显示时创建）
+        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)    
+        window_created = True
+    
+    # 显示图像并更新窗口标题
+    cv2.imshow(WINDOW_NAME, image)
+    cv2.setWindowTitle(WINDOW_NAME, title)  # 更新窗口标题
+
+    # 等待按键
+    cv2.waitKey(0)  # 等待按键来关闭窗口
+    # 关闭窗口
+    cv2.destroyAllWindows()
+
+# Tkinter 显示图像
+def show_image_tkinter(image, title):
+    root = tk.Tk()
+    root.title(title)
+    
+    # 转换 OpenCV 图像为 Pillow 图像
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # BGR -> RGB
+    image_pil = Image.fromarray(image_rgb)
+    photo = ImageTk.PhotoImage(image_pil)
+    
+    # 显示图像
+    label = tk.Label(root, image=photo)
+    label.pack()
+    
+    root.mainloop()
+
+# 显示图像（根据 GUI 后端切换）
+def show_image(image, title):
+    if USE_OPENCV:
+        show_image_opencv(image, title)
+    else:
+        show_image_tkinter(image, title)
 
 # 替换全局 print 函数
 original_print = builtins.print
@@ -101,17 +153,8 @@ def main(argv1):
     FM._DetectedArrowHead = BB_Arrows
     FM._ImageDetectedArrow = Arrow_Img
     print("完成标注尺寸箭头检测...")
-    
-    # 定义一个窗口名称
-    WINDOW_NAME = "测试窗口"    
-    # 初始化窗口（可选：指定窗口大小或其他属性）
-    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-    # 显示图像并刷新内容
-    cv2.imshow(WINDOW_NAME, FM._ImageDetectedArrow)
-    cv2.setWindowTitle(WINDOW_NAME, "标注尺寸箭头检测")
-    cv2.waitKey(0)  # 设置 5秒的延迟以刷新内容   
-    # cv2.imshow("Detected Arrows", FM._ImageDetectedArrow)
-    # cv2.waitKey(0)
+       
+    show_image(FM._ImageDetectedArrow, "标注尺寸箭头检测")    
     
     for i in BB_Arrows:
         P1 = i._BoundingBoxP1
@@ -124,10 +167,8 @@ def main(argv1):
     segments, DimensionalLine_Img = DimensionalLinesFeature.Detect(FM)
     FM._ImageDetectedDimensionalLine = DimensionalLine_Img
     FM._DetectedDimensionalLine = segments
-    print("完成标注尺寸线检测...")  
-    cv2.imshow(WINDOW_NAME, FM._ImageDetectedDimensionalLine)    
-    cv2.setWindowTitle(WINDOW_NAME, str("标注尺寸线检测"))
-    cv2.waitKey(0)
+    print("完成标注尺寸线检测...")     
+    show_image(FM._ImageDetectedDimensionalLine, str("标注尺寸线检测"))   
 
     for j in segments:
       for i in j._Leaders:
@@ -145,10 +186,8 @@ def main(argv1):
     ExtractedTextArea, TextArea_Img = TextsFeature.Detect(FM)
     FM._ImageDetectedDimensionalText = TextArea_Img
     FM._DetectedDimensionalText = ExtractedTextArea
-    print("完成文本区域提取...") 
-    cv2.imshow(WINDOW_NAME, FM._ImageDetectedDimensionalText)
-    cv2.setWindowTitle(WINDOW_NAME, "文本区域检测")
-    cv2.waitKey(0)
+    print("完成文本区域提取...")   
+    show_image(FM._ImageDetectedDimensionalText, "文本区域检测")   
 
     for i in ExtractedTextArea:
         P1 = i._TextBoxP1
@@ -167,10 +206,8 @@ def main(argv1):
     segments, DetectedLine_Img = LineSegmentsFeature.Detect(FM)
     FM._DetectedLine = segments
     FM._ImageDetectedLine = DetectedLine_Img
-    print("完成直线检测...")    
-    cv2.imshow(WINDOW_NAME, FM._ImageDetectedLine)
-    cv2.setWindowTitle(WINDOW_NAME, "直线检测")
-    cv2.waitKey(0)
+    print("完成直线检测...")       
+    show_image(FM._ImageDetectedLine, "直线检测")   
 
     print("开始支撑线的关联...")
     SupportLinesFeature.Detect(FM)
@@ -200,10 +237,8 @@ def main(argv1):
     detectedcircle, DetectedCircle_Img = CirclesFeature.Detect(FM)
     FM._ImageDetectedCircle = DetectedCircle_Img
     FM._DetectedCircle = detectedcircle
-    print("完成圆检测...")   
-    cv2.imshow(WINDOW_NAME, FM._ImageDetectedCircle)
-    cv2.setWindowTitle(WINDOW_NAME, "圆检测")
-    cv2.waitKey(0)
+    print("完成圆检测...")      
+    show_image(FM._ImageDetectedCircle, "圆检测")   
 
     for i in detectedcircle:
         center = i._centre
