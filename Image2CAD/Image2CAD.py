@@ -36,19 +36,38 @@ def show_image_opencv(image, title):
     cv2.destroyAllWindows()
 
 # Tkinter 显示图像
-def show_image_tkinter(image, title):
+import tkinter as tk
+from PIL import Image, ImageTk
+import cv2
+
+def show_image_tkinter(image, title, max_width=800, max_height=600):
     root = tk.Tk()
     root.title(title)
-    
+
     # 转换 OpenCV 图像为 Pillow 图像
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # BGR -> RGB
     image_pil = Image.fromarray(image_rgb)
+
+    # 获取原始图像的宽高
+    img_width, img_height = image_pil.size
+
+    # 计算缩放比例
+    scale_factor = min(max_width / img_width, max_height / img_height, 1)
+
+    # 如果图像较大，按比例缩放
+    if scale_factor < 1:
+        new_width = int(img_width * scale_factor)
+        new_height = int(img_height * scale_factor)
+        image_pil = image_pil.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+    # 将图像转换为 PhotoImage 对象
     photo = ImageTk.PhotoImage(image_pil)
-    
+
     # 显示图像
     label = tk.Label(root, image=photo)
+    label.image = photo  # 需要保留对图片的引用
     label.pack()
-    
+
     root.mainloop()
 
 # 显示图像（根据 GUI 后端切换）
@@ -115,7 +134,7 @@ def main(argv1):
     font_path = "C:/Windows/Fonts/msyh.ttc"  # 微软雅黑字体路径
     font = ImageFont.truetype(font_path, 32)
     
-    timestr = time.strftime("%Y%m%d-%H%M%S")
+    timestr = time.strftime("%Y%m%d-%H%M")
     Start_time = time.strftime("%H hr - %M min - %S sec")
     print("Image2CAD 启动： " + Start_time + "...")
     base = os.path.basename(img_path)
@@ -246,13 +265,13 @@ def main(argv1):
         Erased_Img = Eraser.EraseCircle(FM._ImageCleaned, center, radius)
     FM._ImageCleaned = Erased_Img
     
-    print("开始导出萃取数据到I2C文件...")
+    print("开始导出提取数据到I2C文件...")
     I2CWriter.Write(FM)
-    print("完成导出萃取数据到I2C文件...")
+    print("完成导出提取数据到I2C文件...")
     
-    print("E开始导出萃取数据到dxf文件...")
+    print("E开始导出提取数据到dxf文件...")
     DXFWriter.Write(FM)
-    print("完成导出萃取数据到dxf文件...")
+    print("完成导出提取数据到dxf文件...")
     
     print("Image2CAD执行完成...")
 

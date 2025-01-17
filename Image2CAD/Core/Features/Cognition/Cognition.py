@@ -429,6 +429,8 @@ class Cognition():
                 p1 = ah._BoundingBoxP1
                 p2 = ah._BoundingBoxP2
                 TempImg = OriginalImg[p1.y:p2.y+4, p1.x:p2.x+4]
+                if TempImg is None or TempImg.shape[0] == 0 or TempImg.shape[1] == 0:
+                    continue
                 TempImg = ImgTransform.ImgAspectResize(TempImg, 100, 100)
                 
                 cornerImg = TempImg.copy()
@@ -460,7 +462,7 @@ class Cognition():
                 Direction = Cognition.GetDirection(projectedPt, projectedCorner)
                 ah._Direction = Direction
                 Cognition.AssignArrowHeadsDirection(ArrowHeadsList, ah._ArrowCenter, Direction)
-                print(Direction)
+                # print(Direction)
 
     @staticmethod
     def CheckThicknessInVicinity(x, y, distImg):
