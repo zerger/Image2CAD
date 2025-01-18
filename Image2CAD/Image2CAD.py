@@ -5,77 +5,6 @@ import sys
 import numpy as np
 import builtins
 from PIL import ImageFont, Image, ImageTk
-import tkinter as tk
-
-
-# 选择 GUI 库的开关
-USE_OPENCV = False  # 切换为 False 使用 Tkinter
-
-# OpenCV 显示图像
-# 全局变量，记录窗口是否已创建
-window_created = False
-
-def show_image_opencv(image, title):
-    global window_created
-    # 定义一个窗口名称
-    WINDOW_NAME = "测试窗口"    
-
-    # 检查窗口是否已经创建
-    if not window_created:
-        # 初始化窗口（只在第一次显示时创建）
-        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)    
-        window_created = True
-    
-    # 显示图像并更新窗口标题
-    cv2.imshow(WINDOW_NAME, image)
-    cv2.setWindowTitle(WINDOW_NAME, title)  # 更新窗口标题
-
-    # 等待按键
-    cv2.waitKey(0)  # 等待按键来关闭窗口
-    # 关闭窗口
-    cv2.destroyAllWindows()
-
-# Tkinter 显示图像
-import tkinter as tk
-from PIL import Image, ImageTk
-import cv2
-
-def show_image_tkinter(image, title, max_width=800, max_height=600):
-    root = tk.Tk()
-    root.title(title)
-
-    # 转换 OpenCV 图像为 Pillow 图像
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # BGR -> RGB
-    image_pil = Image.fromarray(image_rgb)
-
-    # 获取原始图像的宽高
-    img_width, img_height = image_pil.size
-
-    # 计算缩放比例
-    scale_factor = min(max_width / img_width, max_height / img_height, 1)
-
-    # 如果图像较大，按比例缩放
-    if scale_factor < 1:
-        new_width = int(img_width * scale_factor)
-        new_height = int(img_height * scale_factor)
-        image_pil = image_pil.resize((new_width, new_height), Image.Resampling.LANCZOS)
-
-    # 将图像转换为 PhotoImage 对象
-    photo = ImageTk.PhotoImage(image_pil)
-
-    # 显示图像
-    label = tk.Label(root, image=photo)
-    label.image = photo  # 需要保留对图片的引用
-    label.pack()
-
-    root.mainloop()
-
-# 显示图像（根据 GUI 后端切换）
-def show_image(image, title):
-    if USE_OPENCV:
-        show_image_opencv(image, title)
-    else:
-        show_image_tkinter(image, title)
 
 # 替换全局 print 函数
 original_print = builtins.print
@@ -129,6 +58,7 @@ def main(argv1):
     from Core.Utils.Eraser import Eraser
     from Core.Utils.I2CWriter import I2CWriter
     from Core.Utils.DXFWriter import DXFWriter
+    from Core.Utils.ShowImage import ShowImage
     
     # 加载微软雅黑字体
     font_path = "C:/Windows/Fonts/msyh.ttc"  # 微软雅黑字体路径
@@ -159,7 +89,10 @@ def main(argv1):
     # 判断背景是否为白色，如果不是则进行反色处理
     if not is_background_white(img):
         img = invert_image_colors(img)
-        
+    # 放大图像
+    scale_factor = 1  # 放大因子
+    img = cv2.resize(img, None, fx=scale_factor, fy=scale_factor) 
+       
     FM._ImageOriginal = img
     FM._ImageCleaned = img.copy()
     FM._ImageDetectedDimensionalText = img.copy()
@@ -168,12 +101,12 @@ def main(argv1):
     
     AD_Time = time.strftime("%H hr - %M min - %S sec")
     print("开始标注尺寸箭头检测 " + AD_Time + "...")
-    BB_Arrows, Arrow_Img = ArrowHeadsFeature.Detect(FM, 35, 70)
+    BB_Arrows, Arrow_Img = ArrowHeadsFeature.Detect(FM, 3, 7)
     FM._DetectedArrowHead = BB_Arrows
     FM._ImageDetectedArrow = Arrow_Img
     print("完成标注尺寸箭头检测...")
        
-    show_image(FM._ImageDetectedArrow, "标注尺寸箭头检测")    
+    ShowImage.show_image(FM._ImageDetectedArrow, "标注尺寸箭头检测")    
     
     for i in BB_Arrows:
         P1 = i._BoundingBoxP1
@@ -187,7 +120,7 @@ def main(argv1):
     FM._ImageDetectedDimensionalLine = DimensionalLine_Img
     FM._DetectedDimensionalLine = segments
     print("完成标注尺寸线检测...")     
-    show_image(FM._ImageDetectedDimensionalLine, str("标注尺寸线检测"))   
+    ShowImage.show_image(FM._ImageDetectedDimensionalLine, str("标注尺寸线检测"))   
 
     for j in segments:
       for i in j._Leaders:
@@ -206,7 +139,7 @@ def main(argv1):
     FM._ImageDetectedDimensionalText = TextArea_Img
     FM._DetectedDimensionalText = ExtractedTextArea
     print("完成文本区域提取...")   
-    show_image(FM._ImageDetectedDimensionalText, "文本区域检测")   
+    ShowImage.show_image(FM._ImageDetectedDimensionalText, "文本区域检测")   
 
     for i in ExtractedTextArea:
         P1 = i._TextBoxP1
@@ -226,7 +159,7 @@ def main(argv1):
     FM._DetectedLine = segments
     FM._ImageDetectedLine = DetectedLine_Img
     print("完成直线检测...")       
-    show_image(FM._ImageDetectedLine, "直线检测")   
+    ShowImage.show_image(FM._ImageDetectedLine, "直线检测")   
 
     print("开始支撑线的关联...")
     SupportLinesFeature.Detect(FM)
@@ -257,7 +190,7 @@ def main(argv1):
     FM._ImageDetectedCircle = DetectedCircle_Img
     FM._DetectedCircle = detectedcircle
     print("完成圆检测...")      
-    show_image(FM._ImageDetectedCircle, "圆检测")   
+    ShowImage.show_image(FM._ImageDetectedCircle, "圆检测")   
 
     for i in detectedcircle:
         center = i._centre

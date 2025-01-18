@@ -46,9 +46,7 @@ def main():
     parser.add_argument("output_dir", help="The directory to save images")
     
     # 解析命令行参数
-    args = parser.parse_args()
-
-    # 调用 pdf_to_images 函数
+    args = parser.parse_args()  
     pdf_to_images(args.pdf_path, args.output_dir)
 
 if __name__ == "__main__":

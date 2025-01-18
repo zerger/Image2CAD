@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 from Core.Math.Point2 import Point2
 from Core.Features.FeatureManager import ArrowHeads
+from Core.Utils.ShowImage import ShowImage
 
 from xml.etree import ElementTree as ET
 from xml.etree.ElementTree import Element, SubElement
@@ -26,6 +27,7 @@ class ArrowHeadsFeature():
         erosion = cv2.erode(arrows_image, kernel)
         dilated = cv2.dilate(erosion, kernel)
         
+        # ShowImage.show_image(dilated, "Arrowheads Detection")
         # _im,contour,hierarchy = cv2.findContours(dilated,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
         contour, hierarchy = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
