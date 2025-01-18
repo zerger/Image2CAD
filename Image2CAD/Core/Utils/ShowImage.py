@@ -2,7 +2,6 @@
 import tkinter as tk
 from PIL import Image, ImageTk
 import cv2
-
 class ImageViewer:
     def __init__(self, image, title, max_width=1080, max_height=768):
         self.root = tk.Tk()
@@ -19,18 +18,21 @@ class ImageViewer:
         self.max_width = max_width
         self.max_height = max_height
 
-        # 默认缩放比例为 1
+        # 当前缩放比例初始为 1.0
         self.scale_factor = 1.0
-
-        # 创建 Canvas 组件用于显示图像
-        self.canvas = tk.Canvas(self.root, width=self.max_width, height=self.max_height)
-        self.canvas.pack()
 
         # 当前平移位置
         self.offset_x = 0
         self.offset_y = 0
 
-        # 创建初始缩放后的图像
+        # 创建 Canvas 组件用于显示图像
+        self.canvas = tk.Canvas(self.root, width=self.max_width, height=self.max_height)
+        self.canvas.pack()
+
+        # 设置初始缩放比例，使图像适应Canvas大小
+        self.initial_scale()
+
+        # 计算初始图像显示区域并更新显示
         self.update_image()
 
         # 绑定鼠标滚轮事件（缩放）
@@ -39,49 +41,45 @@ class ImageViewer:
         # 绑定鼠标拖动事件（平移）
         self.canvas.bind("<ButtonPress-1>", self.on_drag_start)
         self.canvas.bind("<B1-Motion>", self.on_drag_motion)
+        # 绑定双击事件（全显）
+        self.canvas.bind("<Double-1>", self.on_double_click)
+
+    def initial_scale(self):
+        """计算图像初始缩放比例，使其适应 Canvas 大小"""
+        scale_x = self.max_width / self.img_width
+        scale_y = self.max_height / self.img_height
+        self.scale_factor = min(scale_x, scale_y)  # 选择最小比例来适应窗口
 
     def update_image(self):
-        """根据当前缩放比例更新图像"""
-        # 计算新的图像尺寸
+        """根据当前平移位置和图像区域更新显示的图像部分"""
+        # 根据当前缩放比例计算图像新的尺寸
         new_width = int(self.img_width * self.scale_factor)
         new_height = int(self.img_height * self.scale_factor)
 
-        # 计算最大缩放比例，确保图像尺寸不超过 Canvas 的大小
-        max_scale_x = self.max_width / self.img_width
-        max_scale_y = self.max_height / self.img_height
-        max_scale = min(max_scale_x, max_scale_y)
+        # 使用 PIL 的 resize 方法调整图像大小
+        resized_image = self.image_pil.resize((new_width, new_height), Image.Resampling.NEAREST)
 
-        # 确保缩放后的图像不会超出 Canvas
-        if self.scale_factor > max_scale:
-            self.scale_factor = max_scale
+        # 限制平移偏移量，避免超出图像边界
+        self.offset_x = max(0, min(self.offset_x, new_width - self.max_width))
+        self.offset_y = max(0, min(self.offset_y, new_height - self.max_height))
 
-        # 更新图像尺寸
-        new_width = int(self.img_width * self.scale_factor)
-        new_height = int(self.img_height * self.scale_factor)
+        # 根据当前缩放和偏移量计算显示区域的左上角和右下角
+        left = self.offset_x
+        top = self.offset_y
+        right = left + self.max_width
+        bottom = top + self.max_height
 
-        # 调整图像大小
-        resized_image = self.image_pil.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        # 裁剪图像的特定区域
+        cropped_image = resized_image.crop((left, top, right, bottom))
 
         # 转换为 Tkinter 可用的图像格式
-        self.photo = ImageTk.PhotoImage(resized_image)
+        self.photo = ImageTk.PhotoImage(cropped_image)
 
         # 清空 Canvas 上的图像
         self.canvas.delete("all")
 
-        # 更新 Canvas 上的图像，确保图像居中
-        center_x = self.max_width // 2
-        center_y = self.max_height // 2
-        image_x = center_x + self.offset_x
-        image_y = center_y + self.offset_y
-
-        # 打印调试信息
-        # print(f"Image size: {new_width}x{new_height}")
-        # print(f"Canvas center: ({center_x}, {center_y})")
-        # print(f"Image position: ({image_x}, {image_y})")
-
-        # 显示图像
-        self.canvas.create_image(image_x, image_y, image=self.photo)
-
+        # 在 Canvas 上显示裁剪后的图像
+        self.canvas.create_image(0, 0, image=self.photo, anchor="nw")
 
     def on_mouse_wheel(self, event):
         """处理鼠标滚轮事件以缩放图像"""
@@ -90,8 +88,7 @@ class ImageViewer:
         elif event.delta < 0:  # 向下滚动（缩小）
             self.scale_factor /= 1.1
 
-        # 更新图像并刷新显示
-        self.update_image()
+        self.root.after(100, self.update_image)
 
     def on_drag_start(self, event):
         """鼠标按下时记录拖动起点"""
@@ -105,15 +102,23 @@ class ImageViewer:
         dy = event.y - self.drag_start_y
 
         # 更新平移偏移量
-        self.offset_x += dx
-        self.offset_y += dy
+        self.offset_x -= dx
+        self.offset_y -= dy
 
-        # 更新图像位置
-        self.update_image()
+        self.root.after(100, self.update_image)
 
         # 更新拖动起点
         self.drag_start_x = event.x
         self.drag_start_y = event.y
+    
+    def on_double_click(self, event):
+        """处理双击事件以全显图像"""
+        # 计算全显比例
+        scale_x = self.max_width / self.img_width
+        scale_y = self.max_height / self.img_height
+        self.scale_factor = min(scale_x, scale_y)  # 选择最小比例来适应窗口
+        
+        self.root.after(100, self.update_image)
 
     def show(self):
         """显示图像"""
@@ -150,7 +155,7 @@ class ShowImage():
         
     @staticmethod
     def show_image_tkinter(image, title, max_width=1080, max_height=768):
-        viewer = ImageViewer(image, 'Image Viewer', max_width, max_height)
+        viewer = ImageViewer(image, title, max_width, max_height)
         viewer.show()
         
     # 显示图像（根据 GUI 后端切换）

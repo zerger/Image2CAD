@@ -29,10 +29,8 @@ class ArrowHeadsFeature():
         
         # ShowImage.show_image(dilated, "Arrowheads Detection")
         # _im,contour,hierarchy = cv2.findContours(dilated,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
-        contour, hierarchy = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        empty_image = erosion.copy()
-        empty_image.fill(0)
+        contour, hierarchy = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)       
+      
         ExtractedArrows = []
    
         for i in range(0, len(contour)):

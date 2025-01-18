@@ -101,7 +101,7 @@ def main(argv1):
     
     AD_Time = time.strftime("%H hr - %M min - %S sec")
     print("开始标注尺寸箭头检测 " + AD_Time + "...")
-    BB_Arrows, Arrow_Img = ArrowHeadsFeature.Detect(FM, 3, 7)
+    BB_Arrows, Arrow_Img = ArrowHeadsFeature.Detect(FM, 35, 70)
     FM._DetectedArrowHead = BB_Arrows
     FM._ImageDetectedArrow = Arrow_Img
     print("完成标注尺寸箭头检测...")
