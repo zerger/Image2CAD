@@ -35,12 +35,14 @@ class ArrowHeadsFeature():
    
         for i in range(0, len(contour)):
             area = cv2.contourArea(contour[i])
-
+            # print(f"contour area: {area}")
+            
             if area_min < area <= area_max: 
                 x,y,w,h = cv2.boundingRect(contour[i])
                 P1 = Point2(int(x-3), int(y-3))
                 P2 = Point2(int(x+w+2), int(y+h+2))
-                cv2.rectangle(img,(x-3,y-3),(x+w+2,y+h+2),(255,0,0),1)
+                # print(f"Rectangle: ({x-3}, {y-3}), ({x+w+2}, {y+h+2})")
+                cv2.rectangle(img,(x-3,y-3),(x+w+2,y+h+2),(255,0,0),2)
                 M = cv2.moments(contour[i])
                 cx = int(M['m10']/M['m00'])
                 cy = int(M['m01']/M['m00'])
