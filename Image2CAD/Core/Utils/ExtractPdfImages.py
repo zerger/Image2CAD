@@ -14,14 +14,22 @@ from ShowImage import ShowImage
 from RidgeExtractor import OptimizedRidgeExtractor
 from scipy.spatial import Voronoi
 import matplotlib.pyplot as plt
-from shapely.geometry import Polygon, MultiPoint, LineString
 from shapely.ops import unary_union
 from scipy.spatial import Voronoi
 import numpy as np
 import ezdxf
-from shapely.geometry import Polygon
-from centerline.geometry import Centerline
+from ezdxf.enums import TextEntityAlignment
+from Centerline.geometry import Centerline
 from shapely.geometry import Polygon, MultiPolygon, MultiLineString, LineString
+from scipy.interpolate import splprep, splev
+from scipy.spatial import KDTree
+from sklearn.cluster import DBSCAN
+from paddleocr import PaddleOCR, draw_ocr
+from LabelCenterlines import get_centerline
+# from GraphPath import process_multilinestring
+import networkx as nx
+import concurrent.futures
+from rtree import index
       
 # 将 PNG 转换为 PBM 格式
 def convert_png_to_pbm(png_path, pbm_path):
@@ -154,17 +162,511 @@ def efficient_voronoi(polygons, bounds):
     #             ridges.append(LineString(edge))
     
     # return ridges
+def smooth_line(line_coords, s=0.0):
+    if len(line_coords) < 4:
+        return line_coords
+    # 将坐标转化为数组
+    # 移除NaN值，如果有的话
+    coords = np.array(line_coords)
+    coords = coords[~np.isnan(coords).any(axis=1)]  # 移除包含NaN的行
+    # 检查输入数据，确保其不是空的，并且有足够的点
+    if len(line_coords) < 2:
+        return line_coords
+    # 确保数据为二维
+    if coords.ndim != 2 or coords.shape[1] != 2:
+        return line_coords
+    
+    # 使用B样条拟合线条，s为平滑参数，值越大平滑效果越强
+    tck, u = splprep(coords.T, s=s)
+    
+    # 生成平滑后的坐标
+    smooth_coords = np.array(splev(u, tck)).T
+    return smooth_coords
 
-def append_voronoi_to_dxf(dxf_file, ridges):
+def filter_short_segments(ridges, min_length=0.1):
+    if isinstance(ridges, LineString):
+        # 计算线段长度，如果短于min_length则不保留
+        if ridges.length >= min_length:
+            return [ridges]
+        else:
+            return []
+    elif isinstance(ridges, MultiLineString):
+        result = []
+        for line in ridges.geoms:
+            if line.length >= min_length:
+                result.append(line)
+        return result
+    return []
+
+def simplify_line(ridges, tolerance=0.1):
+    return ridges.simplify(tolerance, preserve_topology=True)
+
+def process_ridges(ridges, min_length=0.1, smooth_s=0.5, tolerance=0.1):
+     # 平滑线条
+    if isinstance(ridges, LineString):
+        smoothed = smooth_line(ridges.coords, s=smooth_s)
+        ridges = LineString(smoothed)
+    elif isinstance(ridges, MultiLineString):
+        smoothed_lines = []
+        for line in ridges.geoms:
+            smoothed = smooth_line(line.coords, s=smooth_s)
+            smoothed_lines.append(LineString(smoothed))
+        ridges = MultiLineString(smoothed_lines)
+    
+    # 移除短线段
+    ridges = filter_short_segments(ridges, min_length)
+    if ridges is None:  # 如果是单条短线，过滤掉
+        return None
+    
+    # 简化线条
+    if isinstance(ridges, LineString):
+        ridges = simplify_line(ridges, tolerance)
+    elif isinstance(ridges, MultiLineString):
+        ridges = MultiLineString([simplify_line(line, tolerance) for line in ridges.geoms])
+    
+    return ridges
+
+def merge_nearby_lines_optimized(ridges, tolerance=0.1):
+    if isinstance(ridges, LineString):
+        # 单一 LineString，暂时不合并
+        ridges = [ridges]
+    elif isinstance(ridges, MultiLineString):
+        # 如果是 MultiLineString，转换为 list
+        ridges = list(ridges.geoms)
+    # 获取所有线段的中心点
+    centers = []
+    for line in ridges:
+        # 计算线段的中点作为代表
+        mid_point = np.mean(np.array(line.coords), axis=0)
+        centers.append(mid_point)
+    
+    # 使用 k-d 树来索引线段的中心点
+    tree = KDTree(centers)
+    
+    merged = []
+    merged_indices = set()
+    
+    for i, line in enumerate(ridges):
+        if i in merged_indices:
+            continue
+        
+        # 找到当前线段周围距离小于容差的其他线段
+        indices = tree.query_ball_point(centers[i], tolerance)
+        to_merge = [ridges[j] for j in indices if j != i and j not in merged_indices]
+        
+        # 合并这些线段
+        if to_merge:
+            combined = line
+            for line_to_merge in to_merge:
+                combined = combined.union(line_to_merge)
+                merged_indices.add(ridges.index(line_to_merge))
+            
+            merged.append(combined)
+        else:
+            merged.append(line)
+            merged_indices.add(i)
+
+    return merged
+
+# 合并近似的线段
+def merge_lines_with_hough(lines, padding=10):
+    # 计算输入线段的边界范围
+    min_x, min_y, max_x, max_y = float('inf'), float('inf'), float('-inf'), float('-inf')
+    for line in lines.geoms:
+        for x, y in line.coords:
+            min_x = min(min_x, x)
+            min_y = min(min_y, y)
+            max_x = max(max_x, x)
+            max_y = max(max_y, y)
+    
+    # 动态调整图像大小并添加 padding
+    width = int(max_x - min_x + 2 * padding)
+    height = int(max_y - min_y + 2 * padding)
+    img = np.zeros((height, width), dtype=np.uint8)
+
+    # 将实际坐标映射到图像坐标
+    points = []
+    for line in lines.geoms:
+        for start, end in zip(line.coords[:-1], line.coords[1:]):
+            start_mapped = (int(start[0] - min_x + padding), int(start[1] - min_y + padding))
+            end_mapped = (int(end[0] - min_x + padding), int(end[1] - min_y + padding))
+            points.append([start_mapped[0], start_mapped[1], end_mapped[0], end_mapped[1]])
+            # 在图像上绘制线段
+            cv2.line(img, start_mapped, end_mapped, 255, 1)
+
+    # 使用霍夫变换检测线段
+    lines_detected = cv2.HoughLinesP(img, 1, np.pi / 180, threshold=50, minLineLength=50, maxLineGap=10)
+
+    return lines_detected   
+
+def merge_with_dbscan(ridges, tolerance=0.1):
+    if isinstance(ridges, LineString):
+        # 单一 LineString，暂时不合并
+        ridges = [ridges]
+    elif isinstance(ridges, MultiLineString):
+        # 如果是 MultiLineString，转换为 list
+        ridges = list(ridges.geoms)
+    # 提取每个线段的中点作为聚类的特征
+    centers = np.array([np.mean(np.array(line.coords), axis=0) for line in ridges])
+    
+    # DBSCAN 聚类，eps 控制容差，min_samples 为最小样本数
+    clustering = DBSCAN(eps=tolerance, min_samples=1).fit(centers)
+    
+    # 根据聚类结果合并线段
+    merged = []
+    for label in set(clustering.labels_):
+        cluster = [ridges[i] for i in range(len(ridges)) if clustering.labels_[i] == label]
+        combined = cluster[0]
+        for line in cluster[1:]:
+            combined = combined.union(line)  # 合并线段
+        merged.append(combined)
+    
+    return merged
+
+def build_graph_from_lines(multi_line_string):
+    """
+    根据输入的 MultiLineString 构建一个无向图
+    :param multi_line_string: 输入的 MultiLineString 数据
+    :return: NetworkX 图对象
+    """
+    graph = nx.Graph()    
+
+    points = []
+    for line in multi_line_string.geoms:
+        for i in range(len(line.coords) - 1):
+            start = line.coords[i]  # 统一精度
+            end = line.coords[i + 1]  # 统一精度
+            graph.add_edge(start, end, weight=distance(start, end))
+            points.append(start)
+            points.append(end)                
+    # 合并点
+    merged_points, point_map = merge_points(points, tolerance=5)
+    # 更新图
+    updated_graph = update_graph_edges(graph, point_map)
+                
+    return updated_graph
+
+def merge_points(points, tolerance=5):
+    """
+    合并误差范围内的点为代表点。
+    :param points: 点列表 [(x1, y1), (x2, y2), ...]
+    :param tolerance: 合并容差
+    :return: 合并后的点列表、新旧点的映射
+    """
+    tree = KDTree(points) 
+    merged_points = []
+    point_map = {}
+    visited = set()
+
+    for i, point in enumerate(points):
+        if i in visited:
+            continue
+        # 找到当前点的邻近点
+        neighbors = tree.query_ball_point(point, r=tolerance)
+        cluster = [points[j] for j in neighbors]
+        # 计算代表点（取平均值作为代表点）
+        representative = tuple(np.mean(cluster, axis=0))
+        merged_points.append(representative)
+        # 更新映射关系
+        for j in neighbors:
+            point_map[tuple(points[j])] = representative
+            visited.add(j)
+
+    return merged_points, point_map
+
+def update_graph_edges(graph, point_map):
+    """
+    使用新的点映射更新图的边。
+    :param graph: 原始图 (NetworkX)
+    :param point_map: 点映射字典 {旧点: 新点}
+    :return: 更新后的图
+    """
+    new_graph = nx.Graph()
+    for start, end, data in graph.edges(data=True):
+        new_start = point_map.get(start, start)
+        new_end = point_map.get(end, end)
+        if new_start != new_end:  # 避免自环
+            new_graph.add_edge(new_start, new_end, **data)
+    return new_graph
+
+def find_longest_paths(graph):
+    """
+    寻找图中所有连通子图的最长路径
+    :param graph: 输入的图对象
+    :return: 一个列表，包含每个连通子图的最长路径
+    """
+    # 获取所有连通组件
+    components = list(nx.connected_components(graph))
+    
+    longest_paths = []
+    
+    for component in components:
+        # 从连通组件创建子图
+        subgraph = graph.subgraph(component)
+        
+        # 用来存储最长路径的列表
+        component_longest_paths = []
+
+        # 计算每个节点的最长路径
+        for node in subgraph.nodes():
+            # 使用 BFS 计算每个节点到其他节点的最短路径
+            lengths = nx.single_source_shortest_path_length(subgraph, node)
+            
+            # 找到最远节点
+            farthest_node = max(lengths, key=lengths.get)
+            
+            # 获取从当前节点到最远节点的路径
+            path = nx.shortest_path(subgraph, node, farthest_node)
+            path_length = len(path)
+            
+            # 保存路径
+            component_longest_paths.append(path)
+
+        # 如果当前组件有多个最长路径，按路径长度排序
+        component_longest_paths = sorted(component_longest_paths, key=len, reverse=True)
+        longest_paths.extend(component_longest_paths)
+
+    return longest_paths
+
+def remove_path_from_graph(graph, path):
+    """延迟删除路径上的节点和边"""
+    nodes_to_remove = []
+    edges_to_remove = []
+
+    # 记录需要删除的边
+    for i in range(len(path) - 1):
+        edges_to_remove.append((path[i], path[i+1]))
+    
+    # 记录需要删除的节点（不包括起始和目标节点）
+    for node in path[1:-1]:
+        nodes_to_remove.append(node)
+    
+    # 在遍历完成后进行删除
+    for edge in edges_to_remove:
+        graph.remove_edge(*edge)
+    for node in nodes_to_remove:
+        graph.remove_node(node)
+
+def dijkstra_longest_path(graph, start_node):
+    """
+    使用 Dijkstra 算法从一个起始节点计算最远节点路径
+    :param graph: NetworkX 图对象
+    :param start_node: 起始节点
+    :return: 从起始节点到最远节点的路径
+    """
+    # 确保图没有在计算时被修改，可以使用图的副本
+    graph_copy = graph.copy()
+    
+    try:
+        lengths = nx.single_source_dijkstra_path_length(graph_copy, start_node)
+    except nx.NodeNotFound:
+        print(f"Node {start_node} not found in graph")
+        return []
+    
+    # 找到最远的节点
+    farthest_node = max(lengths, key=lengths.get)
+    
+    # 获取最远节点的路径
+    path = nx.shortest_path(graph_copy, start_node, farthest_node)
+    return path
+
+
+def find_longest_paths_with_dijkstra(graph):
+    longest_paths = []
+
+    # 获取所有连通组件
+    components = list(nx.connected_components(graph))
+
+    for component in components:
+        subgraph = graph.subgraph(component)
+
+        # 获取节点列表进行迭代
+        nodes = list(subgraph.nodes())
+
+        for node in nodes:  # 使用列表来避免修改节点集合时出现错误
+            # 计算从节点到最远节点的路径
+            path = dijkstra_longest_path(subgraph, node)
+            if path:
+                longest_paths.append(path)
+                
+                # 延迟删除已计算的路径
+                remove_path_from_graph(graph, path)
+
+    return longest_paths
+
+# 计算线段的方向（单位向量）
+def get_direction(line):
+    x1, y1 = line.coords[0]
+    x2, y2 = line.coords[-1]
+    dx, dy = x2 - x1, y2 - y1
+    norm = np.sqrt(dx**2 + dy**2)
+    return dx / norm, dy / norm  # 返回单位向量
+
+# 计算两个点之间的距离
+def distance(p1, p2):
+    return np.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
+
+# 判断两个线段是否可以合并
+def can_merge(line1, line2, tolerance=0.1, angle_threshold=np.pi / 12):
+    dir1 = get_direction(line1)
+    dir2 = get_direction(line2)
+    end1 = line1.coords[-1]
+    start2 = line2.coords[0]
+    if distance(end1, start2) < tolerance:
+        angle = np.arccos(np.clip(np.dot(dir1, dir2), -1.0, 1.0))
+        if angle < angle_threshold:
+            return True
+    return False
+
+# 使用空间索引进行线段合并
+def merge_lines_with_rtree(lines, tolerance=0.1, angle_threshold=np.pi / 12):
+    # 构建 R-tree 空间索引
+    idx = index.Index()
+    for i, line in enumerate(lines):
+        # 每条线段的最小外接矩形 (bounding box)
+        minx, miny, maxx, maxy = line.bounds
+        idx.insert(i, (minx, miny, maxx, maxy))
+    
+    merged_lines = []
+    merged_flags = [False] * len(lines)
+
+    for i, line in enumerate(lines):
+        if merged_flags[i]:
+            continue
+        merged_flags[i] = True
+        current_line = line
+
+        # 查询与当前线段相交的线段
+        possible_neighbors = list(idx.intersection(line.bounds))
+
+        for j in possible_neighbors:
+            if i == j or merged_flags[j]:
+                continue
+            neighbor_line = lines[j]
+            if can_merge(current_line, neighbor_line, tolerance, angle_threshold):
+                current_line = LineString(list(current_line.coords) + list(neighbor_line.coords)[1:])
+                merged_flags[j] = True
+        
+        # 将合并后的线段添加到结果中
+        merged_lines.append(current_line)
+
+    return merged_lines
+
+def max_spanning_tree(graph):
+    # 使用 Kruskal 算法创建最大生成树
+    mst = nx.Graph()
+    edges = list(graph.edges(data=True))
+    edges.sort(key=lambda x: x[2]['weight'], reverse=True)  # 根据权重从大到小排序
+    
+    # 使用并查集（Union-Find）来检测是否形成环
+    parent = {}
+    rank = {}
+    
+    def find(x):
+        if parent[x] != x:
+            parent[x] = find(parent[x])
+        return parent[x]
+    
+    def union(x, y):
+        rootX = find(x)
+        rootY = find(y)
+        if rootX != rootY:
+            if rank[rootX] > rank[rootY]:
+                parent[rootY] = rootX
+            elif rank[rootX] < rank[rootY]:
+                parent[rootX] = rootY
+            else:
+                parent[rootY] = rootX
+                rank[rootX] += 1
+
+    # 初始化父节点和秩
+    for edge in edges:
+        parent[edge[0]] = edge[0]
+        parent[edge[1]] = edge[1]
+        rank[edge[0]] = 0
+        rank[edge[1]] = 0
+    
+    # 遍历所有边，并逐一加入最大生成树
+    for u, v, data in edges:
+        if find(u) != find(v):
+            union(u, v)
+            mst.add_edge(u, v, weight=data['weight'])
+    
+    return mst
+
+def extract_contours_from_graph(vertices, edges):
+    """
+    从图数据结构中提取连通边界（多边形轮廓）。
+    :param vertices: 顶点列表 [(x1, y1), (x2, y2), ...]
+    :param edges: 边列表 [(start1, end1), (start2, end2), ...]，start 和 end 为顶点索引
+    :return: 连通边界列表，每个边界是一个顶点索引的顺序列表
+    """
+    from collections import defaultdict
+
+    # 构建邻接表
+    adj_list = defaultdict(list)
+    for start, end in edges:
+        adj_list[start].append(end)
+        adj_list[end].append(start)  # 假设图是无向的
+
+    visited = set()  # 用于记录访问过的节点
+    contours = []    # 存储所有连通边界
+
+    def dfs(node, current_path):
+        """
+        深度优先搜索，用于找到连通的边界路径
+        """
+        visited.add(node)
+        current_path.append(node)
+        for neighbor in adj_list[node]:
+            if neighbor not in visited:
+                dfs(neighbor, current_path)
+
+    # 遍历所有顶点，寻找连通分量
+    for vertex in range(len(vertices)):
+        if vertex not in visited:
+            contour = []
+            dfs(vertex, contour)
+            contours.append(contour)
+
+    return contours
+
+def process_multilinestring(multi_line_string):
+    """
+    处理 MultiLineString 数据，构建图并找出所有连通子图中的最长路径
+    :param multi_line_string: 输入的 MultiLineString 数据
+    :return: 所有连通子图中的最长路径
+    """
+    # 1. 构建图
+    graph = build_graph_from_lines(multi_line_string)     
+
+    print("Graph adjacency list:")
+    for node, neighbors in graph.adjacency():
+        print(node, "->", list(neighbors))
+    # 2. 找到所有连通子图的最长路径
+    # longest_paths = find_longest_paths_with_dijkstra(graph)
+    # return longest_paths
+    # 获取所有连通组件
+    components = list(nx.connected_components(graph))
+    
+    longest_paths = []
+    
+    for component in components:
+        # 从连通组件创建子图
+        subgraph = graph.subgraph(component)
+        vertices = subgraph.nodes()
+        contours = extract_contours_from_graph(vertices, subgraph.edges())
+        contours_coordinates = [[vertices[i] for i in contour] for contour in contours]
+        longest_paths.append(contours_coordinates)
+    return longest_paths   
+
+def append_ridgesAndText_to_dxf(dxf_file, ridges, merged_lines, text_result):
     """
     将 Voronoi 图的边追加到 DXF 文件中
     :param original_file: 原始 DXF 文件路径
     :param ridges: Voronoi ridges 列表（LineString 格式）
     :param output_file: 输出 DXF 文件路径
     """
-    if not ridges:
-        print("No ridges to append. Exiting.")
-        return
     doc = ezdxf.new()
     msp = doc.modelspace()
     if isinstance(ridges, LineString):
@@ -173,6 +675,65 @@ def append_voronoi_to_dxf(dxf_file, ridges):
         for line in ridges.geoms:
             for start, end in zip(line.coords[:-1], line.coords[1:]):
                 msp.add_line(start=start, end=end, dxfattribs={"color": 1})
+    elif isinstance(ridges, list):  # 如果ridges是一个列表
+        for child in ridges:
+            if isinstance(child, LineString):  # 如果是LineString类型
+                msp.add_line(start=child.coords[0], end=child.coords[-1], dxfattribs={"color": 1})
+            elif isinstance(child, MultiLineString):  # 如果是MultiLineString类型
+                for line in child.geoms:
+                    for start, end in zip(line.coords[:-1], line.coords[1:]):
+                        msp.add_line(start=start, end=end, dxfattribs={"color": 1})
+            else:
+                for contour in ridges:
+                   edge_coords = []
+                   for pt in contour:
+                        edge_coords.append(pt)
+                           
+                # for mst in ridges:
+                #     # 获取所有的边（从 mst 中提取边）
+                #     edge_coords = []
+                #     for u, v, data in mst.edges(data=True):
+                #         start = u  # 起点
+                #         end = v    # 终点
+                #         # 将坐标添加到 polyline 的点列表中
+                #         edge_coords.append(start)
+                #         edge_coords.append(end)
+
+                # 在 DXF 中添加 polyline
+                if edge_coords:
+                    msp.add_lwpolyline(edge_coords, close=False, dxfattribs={"color": 1})
+    
+    for line in merged_lines:
+        x1, y1, x2, y2 = line[0]
+        msp.add_line(start=(x1, y1), end=(x2,y2), dxfattribs={"color": 2})
+    
+       
+    for text, x0, y0, x1, y1 in text_result:
+        center_x = (x0 + x1) / 2
+        center_y = (y0 + y1) / 2
+        height = y1 - y0  # 计算文字的高度
+        if height <= 0:
+            continue 
+        msp.add_text(text, dxfattribs={'height': height, 'color': 5}).set_placement((center_x, center_y), align=TextEntityAlignment.MIDDLE_CENTER)
+        
+    # if text_result:            
+    #     result = text_result[0]    
+    #     boxes = [line[0] for line in result]
+    #     txts = [line[1][0] for line in result]
+    #     if len(boxes) == len(txts):
+    #         for box, txt in zip(boxes, txts):
+    #            # 获取框的高度（y坐标差异）
+    #            y_coords = [point[1] for point in box]
+    #            height = max(y_coords) - min(y_coords)  # 计算文字的高度
+    #            if height <= 0:
+    #                continue 
+    #            # 计算文本的中心位置
+    #            x_coords = [point[0] for point in box]
+    #            center_x = sum(x_coords) / len(x_coords)
+    #            center_y = sum(y_coords) / len(y_coords)
+
+    #            # 创建文本（调整文字高度）  
+    #            msp.add_text(txt, dxfattribs={'height': height, 'color': 5}).set_placement((center_x, center_y), align=TextEntityAlignment.MIDDLE_CENTER)
     doc.saveas(dxf_file)
     
 def traverse_geometry(ridges):
@@ -197,11 +758,11 @@ def convert_pbm_to_dxf(pbm_path, dxf_path):
         '-b', 'dxf',                      # 指定输出格式为 DXF
         '-o', dxf_path,                   # 输出文件路径
         '-z', 'minority',                 # 路径分解策略
-        '-t', '1',                        # 忽略小噪点的大小
-        '-a', '0.05',                        # 保留清晰的拐角
-        '-n',                             # 禁用曲线优化
-        '-O', '0.05',                      # 高精度曲线优化容差
-        '-u', '20'                        # 输出量化单位
+        '-t', '5',                        # 忽略小噪点的大小
+        '-a', '0.1',                        # 保留清晰的拐角
+        # '-n',                             # 禁用曲线优化
+        '-O', '0.1',                      # 高精度曲线优化容差
+        '-u', '20',                        # 输出量化单位        
     ]
     
     # 执行 Potrace 命令
@@ -215,6 +776,11 @@ def convert_pbm_to_dxf(pbm_path, dxf_path):
     
 def get_text_hocr(input_path, output_path):
     subprocess.run(['E:/Program Files/Tesseract-OCR/tesseract.exe', input_path, output_path, '-c', 'tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ', '--psm', '6', '-c', 'tessedit_create_hocr=1'])     
+    
+def get_text(img_path):
+    ocr = PaddleOCR(use_angle_cls=True, lang='ch') 
+    result = ocr.ocr(img_path, cls=True)
+    return result
     
 # 解析 hocr 文件，提取文本块的位置
 def parse_hocr_optimized(hocr_file):
@@ -260,8 +826,8 @@ def convert_to_multipolygon(polygons):
             polygon = Polygon(coords)
             if polygon.is_valid:
                 valid_polygons.append(polygon)
-            else:
-                print(f"Invalid polygon skipped")
+            # else:
+            #     print(f"Invalid polygon skipped")
         except Exception as e:
             print(f"Error processing polygon: Error: {e}")
     
@@ -410,9 +976,9 @@ def process_single_file(input_path, output_folder):
     pbm_filename = os.path.splitext(filename)[0] + ".pbm"
     output_pbm_path = os.path.join(output_folder, pbm_filename)
     
-    # hocr_filename = os.path.splitext(filename)[0] 
-    # output_hocrPath = os.path.join(output_folder, hocr_filename)          
-    # get_text_hocr(input_path, output_hocrPath)
+    hocr_filename = os.path.splitext(filename)[0] 
+    output_hocrPath = os.path.join(output_folder, hocr_filename)          
+    get_text_hocr(input_path, output_hocrPath)
     # 调用函数将 PNG 转换为 PBM
     convert_png_to_pbm(input_path, output_pbm_path)
     
@@ -434,12 +1000,20 @@ def process_single_file(input_path, output_folder):
     # extractor = OptimizedRidgeExtractor(polygons, max_distance=10)
     attributes = {"id": 1, "name": "polygon", "valid": True}
     multi_polygon = convert_to_multipolygon(polygons)
-    centerlines = Centerline(multi_polygon, **attributes)
+    centerlines = Centerline(multi_polygon, 0.5)
+    # longest_paths = process_multilinestring(centerlines.geometry)
+   
+    # centerlines = get_centerline(multi_polygon)       
+    merged_lines = merge_lines_with_hough(centerlines.geometry) 
 
     # 追加到原始 DXF 并保存
     newdxf_filename = os.path.splitext(filename)[0] + "_new.dxf"
     output_newdxf_path = os.path.join(output_folder, newdxf_filename)
-    append_voronoi_to_dxf(output_newdxf_path, centerlines.geometry)
+    # processed = process_ridges(centerlines.geometry, 0.1, 0.5, 0.1)
+    # processed = merge_with_dbscan(centerlines.geometry)
+    # ocr_text_result = get_text(input_path)
+    text_positions = parse_hocr_optimized(output_hocrPath + ".hocr")
+    append_ridgesAndText_to_dxf(output_newdxf_path, centerlines, merged_lines, [])
 
 
     print(f"Voronoi ridges have been added to {output_dxf_path}.")
