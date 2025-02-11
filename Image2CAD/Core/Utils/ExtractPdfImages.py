@@ -26,6 +26,7 @@ from multiprocessing import cpu_count
 import networkx as nx
 import concurrent.futures
 from rtree import index
+import shutil
 import time
       
 # 将 PNG 转换为 PBM 格式
@@ -1056,6 +1057,7 @@ def process_single_file(input_path, output_folder):
     # processed = process_ridges(centerlines.geometry, 0.1, 0.5, 0.1)
     # processed = merge_with_dbscan(centerlines.geometry)
     # ocr_text_result = get_text(input_path)
+    shutil.copy2(output_dxf_path, output_newdxf_path)
     text_positions = parse_hocr_optimized(output_hocrPath + ".hocr")
     append_ridgesAndText_to_dxf(output_newdxf_path, centerlines, merged_lines, [])
     end_time = time.time()  
