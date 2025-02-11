@@ -3,15 +3,12 @@ import fitz  # PyMuPDF
 from pdf2image import convert_from_path
 from lxml import etree
 import xml.etree.ElementTree as ET
-from PIL import Image
 import argparse
 import subprocess
 import cv2
-import re
 from bs4 import BeautifulSoup
 import numpy as np
 from ShowImage import ShowImage
-from RidgeExtractor import OptimizedRidgeExtractor
 from scipy.spatial import Voronoi
 import matplotlib.pyplot as plt
 from shapely.ops import unary_union
@@ -24,12 +21,12 @@ from shapely.geometry import Polygon, MultiPolygon, MultiLineString, LineString
 from scipy.interpolate import splprep, splev
 from scipy.spatial import KDTree
 from sklearn.cluster import DBSCAN
-from paddleocr import PaddleOCR, draw_ocr
-from LabelCenterlines import get_centerline
-# from GraphPath import process_multilinestring
+from multiprocessing import Pool
+from multiprocessing import cpu_count
 import networkx as nx
 import concurrent.futures
 from rtree import index
+import time
       
 # 将 PNG 转换为 PBM 格式
 def convert_png_to_pbm(png_path, pbm_path):
@@ -43,6 +40,14 @@ def convert_png_to_pbm(png_path, pbm_path):
     # skeleton = skeletonize(binary_img)
     # ShowImage.show_image(skeleton, "Skeleton")
     # 保存二值化图像
+    
+    # 过滤掉过小的区域
+    contours, _ = cv2.findContours(binary_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        if w < 3 or h < 3:  # 忽略宽度或高度小于 3 的区域
+            cv2.drawContours(binary_img, [contour], -1, 0, -1)
+    
     cv2.imwrite(pbm_path, binary_img)
     
 def skeletonize(img):
@@ -88,16 +93,19 @@ def extract_polygons_from_dxf(file_path):
     for entity in doc.modelspace():
         if entity.dxftype() == "LWPOLYLINE":
             points = entity.get_points("xy")
-            polygons.append(Polygon(points))
+            polygon = Polygon(points)
+            if polygon.is_valid:
+                polygons.append(polygon.simplify(0.5, preserve_topology=True))  # 简化多边形
         elif entity.dxftype() == "POLYLINE":
-            # 获取 POLYLINE 的顶点
             points = []
             for vertex in entity.vertices:
-                if hasattr(vertex.dxf, "location"):  # 检查顶点是否包含坐标
+                if hasattr(vertex.dxf, "location"):
                     points.append((vertex.dxf.location.x, vertex.dxf.location.y))
                 else:
-                    points.append((vertex.dxf.x, vertex.dxf.y))  # 兼容非标准格式
-            polygons.append(Polygon(points))
+                    points.append((vertex.dxf.x, vertex.dxf.y))
+            polygon = Polygon(points)
+            if polygon.is_valid:
+                polygons.append(polygon.simplify(0.5, preserve_topology=True))  # 简化多边形
     return polygons
 
 def calculate_bounds(polygons, buffer=5):
@@ -753,15 +761,15 @@ def convert_pbm_to_dxf(pbm_path, dxf_path):
     # 执行 potrace 命令  
     # 定义 Potrace 参数
     params = [
-        'D:/Image2CAD/Image2CAD/potrace',  # potrace 的路径
+        'D:/Image2CADPy/Image2CAD/potrace',  # potrace 的路径
         pbm_path,                         # 输入文件路径
         '-b', 'dxf',                      # 指定输出格式为 DXF
         '-o', dxf_path,                   # 输出文件路径
         '-z', 'minority',                 # 路径分解策略
-        '-t', '5',                        # 忽略小噪点的大小
-        '-a', '0.1',                        # 保留清晰的拐角
+        '-t', '2',                        # 忽略小噪点的大小
+        '-a', '0',                        # 保留清晰的拐角
         # '-n',                             # 禁用曲线优化
-        '-O', '0.1',                      # 高精度曲线优化容差
+        '-O', '0.2',                      # 高精度曲线优化容差
         '-u', '20',                        # 输出量化单位        
     ]
     
@@ -946,12 +954,7 @@ def png_to_svg(input_path, output_folder=None):
             os.makedirs(output_folder)
         
         # 遍历文件夹中的所有 PNG 文件
-        for filename in os.listdir(input_path):
-            if filename.endswith(".png"):
-                file_path = os.path.join(input_path, filename)
-                process_single_file(file_path, output_folder)
-        print(f"完成png转svg转换，输出到 {output_folder}")
-        
+        process_files_in_parallel(input_path, output_folder)             
     # 如果输入是文件
     elif os.path.isfile(input_path) and input_path.endswith(".png"):
         # 如果没有指定输出文件夹，则使用输入文件的目录
@@ -966,29 +969,55 @@ def png_to_svg(input_path, output_folder=None):
         process_single_file(input_path, output_folder)
     else:
         raise ValueError(f"Invalid input path: {input_path}. Must be a .png file or a folder containing .png files.")
-
+    
+def process_files_in_parallel(input_path, output_folder, max_processes=None):
+    # 获取所有文件
+    filenames = [filename for filename in os.listdir(input_path) if filename.endswith(".png")]
+    
+    # 如果没有指定最大并发数，则使用默认值（CPU 核心数的一半）
+    if max_processes is None:
+        max_processes = max(1, cpu_count() // 2)
+    
+    # 创建进程池，限制并发数
+    with Pool(processes=max_processes) as pool:
+        # 使用 starmap 函数并行处理每个文件
+        pool.starmap(process_single_file, [(os.path.join(input_path, filename), output_folder) for filename in filenames])
+        
 def process_single_file(input_path, output_folder):
     """
     处理单个 PNG 文件：将其转换为 PBM，再转换为 DXF。
     """
+    start_time = time.time()
     # 生成 PBM 文件路径
     filename = os.path.basename(input_path)
     pbm_filename = os.path.splitext(filename)[0] + ".pbm"
-    output_pbm_path = os.path.join(output_folder, pbm_filename)
+    output_pbm_path = os.path.join(output_folder, pbm_filename)  
     
     hocr_filename = os.path.splitext(filename)[0] 
     output_hocrPath = os.path.join(output_folder, hocr_filename)          
     get_text_hocr(input_path, output_hocrPath)
+    end_time = time.time()  
+    print(f"get_text_hocr Execution time: {end_time - start_time:.2f} seconds")
+    start_time = end_time
     # 调用函数将 PNG 转换为 PBM
     convert_png_to_pbm(input_path, output_pbm_path)
+    end_time = time.time()  
+    print(f"convert_png_to_pbm Execution time: {end_time - start_time:.2f} seconds")
+    start_time = end_time
     
     # 生成 DXF 文件路径
     dxf_filename = os.path.splitext(filename)[0] + ".dxf"
     output_dxf_path = os.path.join(output_folder, dxf_filename)
     convert_pbm_to_dxf(output_pbm_path, output_dxf_path)
+    end_time = time.time()  
+    print(f"convert_pbm_to_dxf Execution time: {end_time - start_time:.2f} seconds")
+    start_time = end_time
     
    # 提取多边形
     polygons = extract_polygons_from_dxf(output_dxf_path)
+    end_time = time.time()  
+    print(f"extract_polygons_from_dxf Execution time: {end_time - start_time:.2f} seconds")
+    start_time = end_time
 
     # 计算边界框
     # bounds = calculate_bounds(polygons)
@@ -999,12 +1028,27 @@ def process_single_file(input_path, output_folder):
      # 初始化提取器（设置最大间距为 2.5）
     # extractor = OptimizedRidgeExtractor(polygons, max_distance=10)
     attributes = {"id": 1, "name": "polygon", "valid": True}
-    multi_polygon = convert_to_multipolygon(polygons)
-    centerlines = Centerline(multi_polygon, 0.5)
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        multi_polygon = convert_to_multipolygon(polygons)        
+    end_time = time.time()  
+    print(f"convert_to_multipolygon Execution time: {end_time - start_time:.2f} seconds")
+    start_time = end_time
+    try:
+        # 增加容差，减少计算量
+        centerlines = Centerline(multi_polygon, 0.5) 
+    except Exception as e:
+        print(f"Error calculating centerlines: {e}")
+        return
+    end_time = time.time()  
+    print(f"Centerline Execution time: {end_time - start_time:.2f} seconds")
+    start_time = end_time
     # longest_paths = process_multilinestring(centerlines.geometry)
    
     # centerlines = get_centerline(multi_polygon)       
     merged_lines = merge_lines_with_hough(centerlines.geometry) 
+    end_time = time.time()  
+    print(f"merge_lines_with_hough Execution time: {end_time - start_time:.2f} seconds")
+    start_time = end_time
 
     # 追加到原始 DXF 并保存
     newdxf_filename = os.path.splitext(filename)[0] + "_new.dxf"
@@ -1014,7 +1058,9 @@ def process_single_file(input_path, output_folder):
     # ocr_text_result = get_text(input_path)
     text_positions = parse_hocr_optimized(output_hocrPath + ".hocr")
     append_ridgesAndText_to_dxf(output_newdxf_path, centerlines, merged_lines, [])
-
+    end_time = time.time()  
+    print(f"append dxf Execution time: {end_time - start_time:.2f} seconds")
+    start_time = end_time
 
     print(f"Voronoi ridges have been added to {output_dxf_path}.")
             
