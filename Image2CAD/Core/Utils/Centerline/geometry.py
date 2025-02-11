@@ -7,9 +7,9 @@ from scipy.spatial import Voronoi
 from shapely.geometry import LineString, MultiLineString, MultiPolygon, Polygon
 from shapely.ops import unary_union
 from shapely.strtree import STRtree
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from . import exceptions
-
+import os
 
 class Centerline:
     """Create a centerline object.
@@ -29,20 +29,29 @@ class Centerline:
         :py:class:`shapely.geometry.MultiPolygon`
     """
 
-    def __init__(
-        self, input_geometry, interpolation_distance=0.5, **attributes
-    ):
+    def __init__(self, input_geometry, interpolation_distance=0.5, simplify_tolerance=0.5, **attributes):
         self._input_geometry = input_geometry
         self._interpolation_distance = abs(interpolation_distance)
+        self._simplify_tolerance = simplify_tolerance  # 新增简化容差参数
 
         if not self.input_geometry_is_valid():
             raise exceptions.InvalidInputTypeError
-
+        # 简化多边形
+        self._input_geometry = self._simplify_geometry(self._input_geometry)       
         self._min_x, self._min_y = self._get_reduced_coordinates()
         self.assign_attributes_to_instance(attributes)
 
         self.geometry = MultiLineString(lines=self._construct_centerline())
-
+        
+    def _simplify_geometry(self, geometry):
+        """简化输入几何体，减少顶点数量"""
+        if isinstance(geometry, Polygon):
+            return geometry.simplify(self._simplify_tolerance, preserve_topology=True)
+        elif isinstance(geometry, MultiPolygon):
+            return MultiPolygon([polygon.simplify(self._simplify_tolerance, preserve_topology=True) 
+                                for polygon in geometry.geoms])
+        return geometry
+         
     def input_geometry_is_valid(self):
         """Input geometry is of a :py:class:`shapely.geometry.Polygon`
         or a :py:class:`shapely.geometry.MultiPolygon`.
@@ -74,16 +83,16 @@ class Centerline:
     def _construct_centerline(self):
         vertices, ridges = self._get_voronoi_vertices_and_ridges()
         linestrings = []
-        for ridge in ridges:
-            if self._ridge_is_finite(ridge):
-                starting_point = self._create_point_with_restored_coordinates(
-                    x=vertices[ridge[0]][0], y=vertices[ridge[0]][1]
-                )
-                ending_point = self._create_point_with_restored_coordinates(
-                    x=vertices[ridge[1]][0], y=vertices[ridge[1]][1]
-                )
-                linestring = LineString((starting_point, ending_point))
-                linestrings.append(linestring)
+        
+        # 设置最大并发数为 CPU 核心数的一半
+        max_workers = max(1, os.cpu_count() // 2)
+        # 并行处理每个 ridge
+        with ThreadPoolExecutor() as executor:
+            futures = [executor.submit(self._process_ridge, ridge, vertices) for ridge in ridges]
+            for future in as_completed(futures):
+                linestring = future.result()
+                if linestring is not None:
+                    linestrings.append(linestring)
 
         str_tree = STRtree(linestrings)
         linestrings_indexes = str_tree.query(
@@ -94,7 +103,19 @@ class Centerline:
             raise exceptions.TooFewRidgesError
 
         return unary_union(contained_linestrings)  
-
+    
+    def _process_ridge(self, ridge, vertices):
+        """处理单个 ridge"""
+        if self._ridge_is_finite(ridge):
+            starting_point = self._create_point_with_restored_coordinates(
+                x=vertices[ridge[0]][0], y=vertices[ridge[0]][1]
+            )
+            ending_point = self._create_point_with_restored_coordinates(
+                x=vertices[ridge[1]][0], y=vertices[ridge[1]][1]
+            )
+            return LineString((starting_point, ending_point))
+        return None
+         
     def _get_voronoi_vertices_and_ridges(self):
         borders = self._get_densified_borders()
 

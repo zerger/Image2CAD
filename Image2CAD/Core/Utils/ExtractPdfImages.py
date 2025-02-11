@@ -15,6 +15,7 @@ from shapely.ops import unary_union
 from scipy.spatial import Voronoi
 import numpy as np
 import ezdxf
+from ezdxf import units
 from ezdxf.enums import TextEntityAlignment
 from Centerline.geometry import Centerline
 from shapely.geometry import Polygon, MultiPolygon, MultiLineString, LineString
@@ -24,10 +25,11 @@ from sklearn.cluster import DBSCAN
 from multiprocessing import Pool
 from multiprocessing import cpu_count
 import networkx as nx
-import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor
 from rtree import index
 import shutil
 import time
+import os
       
 # 将 PNG 转换为 PBM 格式
 def convert_png_to_pbm(png_path, pbm_path):
@@ -86,27 +88,37 @@ def voronoi_skeleton(polygon_points):
     return skeleton_lines
 
 def extract_polygons_from_dxf(file_path):
-    """
-    从 DXF 文件中提取多边形
-    """
-    doc = ezdxf.readfile(file_path)
+    """从 DXF 文件中提取多边形数据"""
+    try:
+        doc = ezdxf.readfile(file_path)
+    except IOError:
+        print(f"无法读取 DXF 文件: {file_path}")
+        return []
+
+    msp = doc.modelspace()
+    entities = list(msp.query("POLYLINE LWPOLYLINE"))
     polygons = []
-    for entity in doc.modelspace():
+
+    def process_entity(entity):
+        """处理单个实体"""
         if entity.dxftype() == "LWPOLYLINE":
-            points = entity.get_points("xy")
-            polygon = Polygon(points)
-            if polygon.is_valid:
-                polygons.append(polygon.simplify(0.5, preserve_topology=True))  # 简化多边形
+            points = list(entity.vertices())
+            if len(points) >= 3:
+                return points
         elif entity.dxftype() == "POLYLINE":
-            points = []
-            for vertex in entity.vertices:
-                if hasattr(vertex.dxf, "location"):
-                    points.append((vertex.dxf.location.x, vertex.dxf.location.y))
-                else:
-                    points.append((vertex.dxf.x, vertex.dxf.y))
-            polygon = Polygon(points)
-            if polygon.is_valid:
-                polygons.append(polygon.simplify(0.5, preserve_topology=True))  # 简化多边形
+            points = [vertex.dxf.location for vertex in entity.vertices]
+            if len(points) >= 3:
+                return points
+        return None
+
+    # 使用线程池并行处理实体
+    with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
+        futures = [executor.submit(process_entity, entity) for entity in entities]
+        for future in futures:
+            result = future.result()
+            if result is not None:
+                polygons.append(result)
+
     return polygons
 
 def calculate_bounds(polygons, buffer=5):
@@ -278,16 +290,19 @@ def merge_nearby_lines_optimized(ridges, tolerance=0.1):
     return merged
 
 # 合并近似的线段
-def merge_lines_with_hough(lines, padding=10):
+def merge_lines_with_hough(lines, padding=0):
+    """
+    使用霍夫变换合并近似的线段，并确保结果与原始线条对齐
+    :param lines: 输入的线段列表（MultiLineString 格式）
+    :param padding: 图像边界扩展（默认为 0）
+    :return: 合并后的线段列表
+    """
+    if not isinstance(lines, MultiLineString):
+        raise ValueError("输入必须是 MultiLineString 类型")
+
     # 计算输入线段的边界范围
-    min_x, min_y, max_x, max_y = float('inf'), float('inf'), float('-inf'), float('-inf')
-    for line in lines.geoms:
-        for x, y in line.coords:
-            min_x = min(min_x, x)
-            min_y = min(min_y, y)
-            max_x = max(max_x, x)
-            max_y = max(max_y, y)
-    
+    min_x, min_y, max_x, max_y = lines.bounds
+
     # 动态调整图像大小并添加 padding
     width = int(max_x - min_x + 2 * padding)
     height = int(max_y - min_y + 2 * padding)
@@ -306,7 +321,19 @@ def merge_lines_with_hough(lines, padding=10):
     # 使用霍夫变换检测线段
     lines_detected = cv2.HoughLinesP(img, 1, np.pi / 180, threshold=50, minLineLength=50, maxLineGap=10)
 
-    return lines_detected   
+    # 将检测到的线段映射回实际坐标
+    merged_lines = []
+    if lines_detected is not None:
+        for line in lines_detected:
+            x1, y1, x2, y2 = line[0]
+            # 将图像坐标映射回实际坐标
+            x1_actual = x1 + min_x - padding
+            y1_actual = y1 + min_y - padding
+            x2_actual = x2 + min_x - padding
+            y2_actual = y2 + min_y - padding
+            merged_lines.append([(x1_actual, y1_actual), (x2_actual, y2_actual)])
+
+    return merged_lines  
 
 def merge_with_dbscan(ridges, tolerance=0.1):
     if isinstance(ridges, LineString):
@@ -671,78 +698,66 @@ def process_multilinestring(multi_line_string):
 
 def append_ridgesAndText_to_dxf(dxf_file, ridges, merged_lines, text_result):
     """
-    将 Voronoi 图的边追加到 DXF 文件中
-    :param original_file: 原始 DXF 文件路径
+    将 Voronoi 图的边和文本追加到现有的 DXF 文件中
+    :param dxf_file: 现有的 DXF 文件路径
     :param ridges: Voronoi ridges 列表（LineString 格式）
-    :param output_file: 输出 DXF 文件路径
+    :param merged_lines: 合并后的线段列表，格式为 [(x1, y1, x2, y2), ...] 或 [((x1, y1), (x2, y2)), ...]
+    :param text_result: 文本结果列表，格式为 [(text, x0, y0, x1, y1), ...]
     """
-    doc = ezdxf.new()
+    try:
+        # 读取现有的 DXF 文件
+        doc = ezdxf.readfile(dxf_file)
+    except IOError:
+        print(f"无法读取 DXF 文件: {dxf_file}")
+        return
+
     msp = doc.modelspace()
+
+    # 添加 Voronoi 图的边
     if isinstance(ridges, LineString):
         msp.add_line(start=ridges.coords[0], end=ridges.coords[-1], dxfattribs={"color": 1})
     elif isinstance(ridges, MultiLineString):
         for line in ridges.geoms:
             for start, end in zip(line.coords[:-1], line.coords[1:]):
                 msp.add_line(start=start, end=end, dxfattribs={"color": 1})
-    elif isinstance(ridges, list):  # 如果ridges是一个列表
+    elif isinstance(ridges, list):  # 如果 ridges 是一个列表
         for child in ridges:
-            if isinstance(child, LineString):  # 如果是LineString类型
+            if isinstance(child, LineString):  # 如果是 LineString 类型
                 msp.add_line(start=child.coords[0], end=child.coords[-1], dxfattribs={"color": 1})
-            elif isinstance(child, MultiLineString):  # 如果是MultiLineString类型
+            elif isinstance(child, MultiLineString):  # 如果是 MultiLineString 类型
                 for line in child.geoms:
                     for start, end in zip(line.coords[:-1], line.coords[1:]):
                         msp.add_line(start=start, end=end, dxfattribs={"color": 1})
             else:
                 for contour in ridges:
-                   edge_coords = []
-                   for pt in contour:
+                    edge_coords = []
+                    for pt in contour:
                         edge_coords.append(pt)
-                           
-                # for mst in ridges:
-                #     # 获取所有的边（从 mst 中提取边）
-                #     edge_coords = []
-                #     for u, v, data in mst.edges(data=True):
-                #         start = u  # 起点
-                #         end = v    # 终点
-                #         # 将坐标添加到 polyline 的点列表中
-                #         edge_coords.append(start)
-                #         edge_coords.append(end)
+                    if edge_coords:
+                        msp.add_lwpolyline(edge_coords, close=False, dxfattribs={"color": 1})
 
-                # 在 DXF 中添加 polyline
-                if edge_coords:
-                    msp.add_lwpolyline(edge_coords, close=False, dxfattribs={"color": 1})
-    
+    # 添加合并后的线段
     for line in merged_lines:
-        x1, y1, x2, y2 = line[0]
-        msp.add_line(start=(x1, y1), end=(x2,y2), dxfattribs={"color": 2})
-    
-       
+        if len(line) == 4:  # 如果 line 是 (x1, y1, x2, y2) 格式
+            x1, y1, x2, y2 = line
+        elif len(line) == 2:  # 如果 line 是 ((x1, y1), (x2, y2)) 格式
+            (x1, y1), (x2, y2) = line
+        else:
+            raise ValueError(f"无效的线段格式: {line}")
+        msp.add_line(start=(x1, y1), end=(x2, y2), dxfattribs={"color": 2})
+
+    # 添加文本
     for text, x0, y0, x1, y1 in text_result:
         center_x = (x0 + x1) / 2
         center_y = (y0 + y1) / 2
         height = y1 - y0  # 计算文字的高度
         if height <= 0:
-            continue 
-        msp.add_text(text, dxfattribs={'height': height, 'color': 5}).set_placement((center_x, center_y), align=TextEntityAlignment.MIDDLE_CENTER)
-        
-    # if text_result:            
-    #     result = text_result[0]    
-    #     boxes = [line[0] for line in result]
-    #     txts = [line[1][0] for line in result]
-    #     if len(boxes) == len(txts):
-    #         for box, txt in zip(boxes, txts):
-    #            # 获取框的高度（y坐标差异）
-    #            y_coords = [point[1] for point in box]
-    #            height = max(y_coords) - min(y_coords)  # 计算文字的高度
-    #            if height <= 0:
-    #                continue 
-    #            # 计算文本的中心位置
-    #            x_coords = [point[0] for point in box]
-    #            center_x = sum(x_coords) / len(x_coords)
-    #            center_y = sum(y_coords) / len(y_coords)
+            continue
+        msp.add_text(text, dxfattribs={'height': height, 'color': 5}).set_placement(
+            (center_x, center_y), align=TextEntityAlignment.MIDDLE_CENTER
+        )
 
-    #            # 创建文本（调整文字高度）  
-    #            msp.add_text(txt, dxfattribs={'height': height, 'color': 5}).set_placement((center_x, center_y), align=TextEntityAlignment.MIDDLE_CENTER)
+    # 保存修改后的 DXF 文件
     doc.saveas(dxf_file)
     
 def traverse_geometry(ridges):
@@ -767,10 +782,10 @@ def convert_pbm_to_dxf(pbm_path, dxf_path):
         '-b', 'dxf',                      # 指定输出格式为 DXF
         '-o', dxf_path,                   # 输出文件路径
         '-z', 'minority',                 # 路径分解策略
-        '-t', '2',                        # 忽略小噪点的大小
-        '-a', '0',                        # 保留清晰的拐角
+        '-t', '5',                        # 忽略小噪点的大小
+        '-a', '0.1',                        # 保留清晰的拐角
         # '-n',                             # 禁用曲线优化
-        '-O', '0.2',                      # 高精度曲线优化容差
+        '-O', '0.1',                      # 高精度曲线优化容差
         '-u', '20',                        # 输出量化单位        
     ]
     
@@ -1014,7 +1029,7 @@ def process_single_file(input_path, output_folder):
     print(f"convert_pbm_to_dxf Execution time: {end_time - start_time:.2f} seconds")
     start_time = end_time
     
-   # 提取多边形
+    # 提取多边形
     polygons = extract_polygons_from_dxf(output_dxf_path)
     end_time = time.time()  
     print(f"extract_polygons_from_dxf Execution time: {end_time - start_time:.2f} seconds")
@@ -1029,7 +1044,7 @@ def process_single_file(input_path, output_folder):
      # 初始化提取器（设置最大间距为 2.5）
     # extractor = OptimizedRidgeExtractor(polygons, max_distance=10)
     attributes = {"id": 1, "name": "polygon", "valid": True}
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    with ThreadPoolExecutor() as executor:
         multi_polygon = convert_to_multipolygon(polygons)        
     end_time = time.time()  
     print(f"convert_to_multipolygon Execution time: {end_time - start_time:.2f} seconds")
@@ -1046,7 +1061,7 @@ def process_single_file(input_path, output_folder):
     # longest_paths = process_multilinestring(centerlines.geometry)
    
     # centerlines = get_centerline(multi_polygon)       
-    merged_lines = merge_lines_with_hough(centerlines.geometry) 
+    merged_lines = merge_lines_with_hough(centerlines.geometry, 0) 
     end_time = time.time()  
     print(f"merge_lines_with_hough Execution time: {end_time - start_time:.2f} seconds")
     start_time = end_time
@@ -1059,7 +1074,7 @@ def process_single_file(input_path, output_folder):
     # ocr_text_result = get_text(input_path)
     shutil.copy2(output_dxf_path, output_newdxf_path)
     text_positions = parse_hocr_optimized(output_hocrPath + ".hocr")
-    append_ridgesAndText_to_dxf(output_newdxf_path, centerlines, merged_lines, [])
+    append_ridgesAndText_to_dxf(output_newdxf_path, centerlines.geometry, merged_lines, [])
     end_time = time.time()  
     print(f"append dxf Execution time: {end_time - start_time:.2f} seconds")
     start_time = end_time
