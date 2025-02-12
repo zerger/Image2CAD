@@ -1,218 +1,527 @@
+import os
+import fitz  # PyMuPDF
+from pdf2image import convert_from_path
+from lxml import etree
+import xml.etree.ElementTree as ET
+import argparse
+import subprocess
 import cv2
+from bs4 import BeautifulSoup
+import numpy as np
+from scipy.spatial import Voronoi
+from shapely.ops import unary_union
+from scipy.spatial import Voronoi
+import numpy as np
+import ezdxf
+from ezdxf import units
+from ezdxf.enums import TextEntityAlignment
+from Centerline.geometry import Centerline
+from shapely.geometry import Polygon, MultiPolygon, MultiLineString, LineString
+from scipy.interpolate import splprep, splev
+from scipy.spatial import KDTree
+from multiprocessing import Pool, cpu_count
+from concurrent.futures import ThreadPoolExecutor
+import shutil
 import time
 import os
-import sys
-import numpy as np
-import builtins
-from PIL import ImageFont, Image, ImageTk
-
-# 替换全局 print 函数
-original_print = builtins.print
-
-def patched_print(*args, **kwargs):
-    kwargs.setdefault('flush', True)
-    original_print(*args, **kwargs)
-
-builtins.print = patched_print
-
-global make_dir_root, timestr
-
-def is_background_white(image):
-    # 获取图像的高度和宽度
-    height, width, _ = image.shape
+      
+# 将 PNG 转换为 PBM 格式
+def convert_png_to_pbm(png_path, pbm_path):
+    img = cv2.imread(png_path)  
+    if img is None:
+        raise ValueError(f"Failed to read the image at {png_path}. Please check the file path or format.")
+    # 将图像转换为灰度图
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # 使用阈值操作将图像转换为黑白图像
+    _, binary_img = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
+    # skeleton = skeletonize(binary_img)
+    # ShowImage.show_image(skeleton, "Skeleton")
+    # 保存二值化图像
     
-    # 获取图像四个角的颜色
-    corners = [
-        image[0, 0],  # 左上角
-        image[0, width - 1],  # 右上角
-        image[height - 1, 0],  # 左下角
-        image[height - 1, width - 1]  # 右下角
+    # 过滤掉过小的区域
+    contours, _ = cv2.findContours(binary_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        if w < 3 or h < 3:  # 忽略宽度或高度小于 3 的区域
+            cv2.drawContours(binary_img, [contour], -1, 0, -1)
+    
+    cv2.imwrite(pbm_path, binary_img)   
+
+def extract_polygons_from_dxf(file_path):
+    """从 DXF 文件中提取多边形数据"""
+    try:
+        doc = ezdxf.readfile(file_path)
+    except IOError:
+        print(f"无法读取 DXF 文件: {file_path}")
+        return []
+
+    msp = doc.modelspace()
+    entities = list(msp.query("POLYLINE LWPOLYLINE"))
+    polygons = []
+
+    def process_entity(entity):
+        """处理单个实体"""
+        if entity.dxftype() == "LWPOLYLINE":
+            points = list(entity.vertices())
+            if len(points) >= 3:
+                return points
+        elif entity.dxftype() == "POLYLINE":
+            points = [vertex.dxf.location for vertex in entity.vertices]
+            if len(points) >= 3:
+                return points
+        return None
+    max_workers = max(1, os.cpu_count() // 2)
+    # 使用线程池并行处理实体
+    with ThreadPoolExecutor(max_workers) as executor:
+        futures = [executor.submit(process_entity, entity) for entity in entities]
+        for future in futures:
+            result = future.result()
+            if result is not None:
+                polygons.append(result)
+
+    return polygons
+
+# 合并近似的线段
+def merge_lines_with_hough(lines, padding=0):
+    """
+    使用霍夫变换合并近似的线段，并确保结果与原始线条对齐
+    :param lines: 输入的线段列表（MultiLineString 格式）
+    :param padding: 图像边界扩展（默认为 0）
+    :return: 合并后的线段列表
+    """
+    if not isinstance(lines, MultiLineString):
+        raise ValueError("输入必须是 MultiLineString 类型")
+
+    # 计算输入线段的边界范围
+    min_x, min_y, max_x, max_y = lines.bounds
+
+    # 动态调整图像大小并添加 padding
+    width = int(max_x - min_x + 2 * padding)
+    height = int(max_y - min_y + 2 * padding)
+    img = np.zeros((height, width), dtype=np.uint8)
+
+    # 将实际坐标映射到图像坐标
+    points = []
+    for line in lines.geoms:
+        for start, end in zip(line.coords[:-1], line.coords[1:]):
+            start_mapped = (int(start[0] - min_x + padding), int(start[1] - min_y + padding))
+            end_mapped = (int(end[0] - min_x + padding), int(end[1] - min_y + padding))
+            points.append([start_mapped[0], start_mapped[1], end_mapped[0], end_mapped[1]])
+            # 在图像上绘制线段
+            cv2.line(img, start_mapped, end_mapped, 255, 1)
+            
+    # 检查输入图像通道数
+    if len(img.shape) == 2 or img.shape[2] == 1:
+        # 图像已经是灰度图，无需转换
+        gray = img
+    else:
+        # 图像是彩色图，转换为灰度图
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # 高斯模糊
+    blurred = cv2.GaussianBlur(gray, ksize=(5, 5), sigmaX=0)
+
+    # 二值化
+    _, binary = cv2.threshold(blurred, thresh=127, maxval=255, type=cv2.THRESH_BINARY)
+
+    # 边缘检测
+    edges = cv2.Canny(binary, 50, 150, apertureSize=3)
+    # 使用霍夫变换检测线段
+    lines_detected = cv2.HoughLinesP(
+        img,
+        rho=1,                          # 距离分辨率
+        theta=np.pi / 180,              # 角度分辨率
+        threshold=20,                   # 累加器阈值
+        minLineLength=10,               # 线段的最小长度
+        maxLineGap=20                   # 线段之间的最大间隔
+    )
+
+    # 将检测到的线段映射回实际坐标
+    merged_lines = []
+    if lines_detected is not None:
+        for line in lines_detected:
+            x1, y1, x2, y2 = line[0]
+            # 将图像坐标映射回实际坐标
+            x1_actual = x1 + min_x - padding
+            y1_actual = y1 + min_y - padding
+            x2_actual = x2 + min_x - padding
+            y2_actual = y2 + min_y - padding
+            merged_lines.append([(x1_actual, y1_actual), (x2_actual, y2_actual)])
+
+    return merged_lines  
+
+def append_ridgesAndText_to_dxf(dxf_file, ridges, merged_lines, text_result):
+    """
+    将 Voronoi 图的边和文本追加到现有的 DXF 文件中
+    :param dxf_file: 现有的 DXF 文件路径
+    :param ridges: Voronoi ridges 列表（LineString 格式）
+    :param merged_lines: 合并后的线段列表，格式为 [(x1, y1, x2, y2), ...] 或 [((x1, y1), (x2, y2)), ...]
+    :param text_result: 文本结果列表，格式为 [(text, x0, y0, x1, y1), ...]
+    """
+    try:
+        # 读取现有的 DXF 文件
+        doc = ezdxf.readfile(dxf_file)
+    except IOError:
+        print(f"无法读取 DXF 文件: {dxf_file}")
+        return
+
+    msp = doc.modelspace()
+
+    # 添加 Voronoi 图的边
+    if isinstance(ridges, LineString):
+        msp.add_line(start=ridges.coords[0], end=ridges.coords[-1], dxfattribs={"color": 1})
+    elif isinstance(ridges, MultiLineString):
+        for line in ridges.geoms:
+            for start, end in zip(line.coords[:-1], line.coords[1:]):
+                msp.add_line(start=start, end=end, dxfattribs={"color": 1})
+    elif isinstance(ridges, list):  # 如果 ridges 是一个列表
+        for child in ridges:
+            if isinstance(child, LineString):  # 如果是 LineString 类型
+                msp.add_line(start=child.coords[0], end=child.coords[-1], dxfattribs={"color": 1})
+            elif isinstance(child, MultiLineString):  # 如果是 MultiLineString 类型
+                for line in child.geoms:
+                    for start, end in zip(line.coords[:-1], line.coords[1:]):
+                        msp.add_line(start=start, end=end, dxfattribs={"color": 1})
+            else:
+                for contour in ridges:
+                    edge_coords = []
+                    for pt in contour:
+                        edge_coords.append(pt)
+                    if edge_coords:
+                        msp.add_lwpolyline(edge_coords, close=False, dxfattribs={"color": 1})
+
+    # 添加合并后的线段
+    for line in merged_lines:
+        if len(line) == 4:  # 如果 line 是 (x1, y1, x2, y2) 格式
+            x1, y1, x2, y2 = line
+        elif len(line) == 2:  # 如果 line 是 ((x1, y1), (x2, y2)) 格式
+            (x1, y1), (x2, y2) = line
+        else:
+            raise ValueError(f"无效的线段格式: {line}")
+        msp.add_line(start=(x1, y1), end=(x2, y2), dxfattribs={"color": 2})
+
+    # 添加文本
+    for text, x0, y0, x1, y1 in text_result:
+        center_x = (x0 + x1) / 2
+        center_y = (y0 + y1) / 2
+        height = y1 - y0  # 计算文字的高度
+        if height <= 0:
+            continue
+        msp.add_text(text, dxfattribs={'height': height, 'color': 5}).set_placement(
+            (center_x, center_y), align=TextEntityAlignment.MIDDLE_CENTER
+        )
+
+    # 保存修改后的 DXF 文件
+    doc.saveas(dxf_file)  
+
+# 使用 Potrace 转换 PBM 为 dxf
+def convert_pbm_to_dxf(pbm_path, dxf_path):   
+    # 执行 potrace 命令  
+    # 定义 Potrace 参数
+    params = [
+        'D:/Image2CADPy/Image2CAD/potrace',  # potrace 的路径
+        pbm_path,                         # 输入文件路径
+        '-b', 'dxf',                      # 指定输出格式为 DXF
+        '-o', dxf_path,                   # 输出文件路径
+        '-z', 'minority',                 # 路径分解策略
+        '-t', '10',                        # 忽略小噪点的大小
+        '-a', '0.5',                        # 保留清晰的拐角
+        # '-n',                             # 禁用曲线优化
+        '-O', '0.5',                      # 高精度曲线优化容差
+        '-u', '50',                        # 输出量化单位        
     ]
     
-    # 计算四个角的平均颜色
-    average_color = np.mean(corners, axis=0)
-    # 判断背景颜色是否接近白色
-    return np.all(average_color > 200)
-
-def invert_image_colors(image):
-    return cv2.bitwise_not(image)
-
-def main(argv1):
-
-    img_path = argv1
-    #img_path = "..\\TestData\\1.png"
-    img_path = os.path.abspath(img_path)
-
-    dir = os.path.dirname(img_path)
-    os.chdir(dir)
-    currentDir = os.getcwd()
+    # 执行 Potrace 命令
+    try:
+        subprocess.run(params, check=True)
+        print(f"DXF file successfully generated: {dxf_path}")
+    except subprocess.CalledProcessError as e:
+        print(f"Error during Potrace execution: {e}")
+    except FileNotFoundError:
+        print("Potrace executable not found. Please check the path.")
     
-    from Core.Features.Texts.TextsFeature import TextsFeature
-    from Core.Features.Arrowheads.ArrowHeadsFeature import ArrowHeadsFeature
-    from Core.Features.Circles.CirclesFeature import CirclesFeature
-    from Core.Features.LineSegments.LineSegmentsFeature import LineSegmentsFeature
-    from Core.Features.Cognition.DimensionalLinesFeature import DimensionalLinesFeature
-    from Core.Features.Cognition.Cognition import Cognition
-    from Core.Features.Cognition.SupportLinesFeature import SupportLinesFeature
-    from Core.Features.FeatureManager import FeatureManager
-    from Core.Utils.Eraser import Eraser
-    from Core.Utils.I2CWriter import I2CWriter
-    from Core.Utils.DXFWriter import DXFWriter
-    from Core.Utils.ShowImage import ShowImage
+def get_text_hocr(input_path, output_path):
+    subprocess.run(['E:/Program Files/Tesseract-OCR/tesseract.exe', input_path, output_path, '-c', 'tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ', '--psm', '6', '-c', 'tessedit_create_hocr=1'])  
     
-    # 加载微软雅黑字体
-    font_path = "C:/Windows/Fonts/msyh.ttc"  # 微软雅黑字体路径
-    font = ImageFont.truetype(font_path, 32)
-    
-    timestr = time.strftime("%Y%m%d-%H%M")
-    Start_time = time.strftime("%H hr - %M min - %S sec")
-    print("Image2CAD 启动： " + Start_time + "...")
-    base = os.path.basename(img_path)
-    folder_name = os.path.splitext(base)[0]
-    print("加载图片: " + img_path + "...")
-    print("创建目录...")
-    make_dir_Output = r"./Output"
-    if not os.path.exists(make_dir_Output):
-        os.mkdir(make_dir_Output)
-    make_dir_folder = r"./Output/"+folder_name
-    make_dir_root = r"./Output/"+folder_name+r"/"+timestr
-    if not os.path.exists(make_dir_folder):
-        os.mkdir(make_dir_folder)
-    os.mkdir(make_dir_root)
+# 解析 hocr 文件，提取文本块的位置
+def parse_hocr_optimized(hocr_file):
+    # 读取 hOCR 文件
+    with open(hocr_file, 'r', encoding='utf-8') as file:
+        hocr_content = file.read()
+
+    text_positions = []
+    try:
+        # 使用 BeautifulSoup 解析 hOCR 内容
+        soup = BeautifulSoup(hocr_content, 'html.parser')
         
-    print("初始化特征管理器...")
-    FM = FeatureManager()
-    FM._ImagePath = img_path
-    FM._RootDirectory = make_dir_root
+        # 遍历每个包含文本的 ocrx_word 标签
+        for word_element in soup.find_all('span', class_='ocrx_word'):
+            # 提取坐标和文本
+            coords = word_element.get('title', '')
+            text = word_element.text.strip() if word_element.text else ''
+            
+            # 获取 bbox 坐标 (x0, y0, x1, y1)
+            if coords:
+                # 提取 bbox 坐标，处理包含 ";" 的部分
+                bbox_part = coords.split('bbox ')[1].split(';')[0]  # 先提取 bbox 后面的坐标部分，直到遇到 ';'
+                bbox_coords = bbox_part.split(' ')[:4]  # 再从中提取前四个坐标
+                
+                x0, y0, x1, y1 = [int(i) for i in bbox_coords]  # 转换为整数
+
+                # 保存文本和坐标
+                text_positions.append((text, x0, y0, x1, y1))
+    except Exception as e:
+        print(f"Error parsing hOCR file: {e}")
+
+    return text_positions
+
+def convert_to_multipolygon(polygons):
+    """
+    将多边形坐标列表转换为 MultiPolygon。
+    :param polygons: 多边形坐标列表，每个多边形为 [(x1, y1), (x2, y2), ...] 的格式。
+    :return: shapely.geometry.MultiPolygon 对象。
+    """
+    valid_polygons = []
+    for coords in polygons:
+        try:
+            polygon = Polygon(coords)
+            if polygon.is_valid:
+                valid_polygons.append(polygon)
+            # else:
+            #     print(f"Invalid polygon skipped")
+        except Exception as e:
+            print(f"Error processing polygon: Error: {e}")
     
-    img = cv2.imread(FM._ImagePath)        
-    # 判断背景是否为白色，如果不是则进行反色处理
-    if not is_background_white(img):
-        img = invert_image_colors(img)
-    # 放大图像
-    scale_factor = 1  # 放大因子
-    img = cv2.resize(img, None, fx=scale_factor, fy=scale_factor) 
+    return MultiPolygon(valid_polygons)
 
-    FM._ImageOriginal = img
-    FM._ImageCleaned = img.copy()
-    FM._ImageDetectedDimensionalText = img.copy()
-    FM._ImageDetectedCircle = img.copy()
-    Erased_Img = img.copy()
+# 获取路径的边界框（最小矩形框）
+def get_path_bbox(path_data):
+    # 这里只是一个简化的版本，实际的路径解析可能更复杂
+    # 假设路径数据是一个简单的矩形或直线
+    # 这里暂时返回一个假设的边界框
+    return (0, 0, 100, 100)  # 示例返回一个固定边界框
 
-    AD_Time = time.strftime("%H hr - %M min - %S sec")
-    print("开始标注尺寸箭头检测 " + AD_Time + "...")
-    BB_Arrows, Arrow_Img = ArrowHeadsFeature.Detect(FM, 35, 70)
-    FM._DetectedArrowHead = BB_Arrows
-    FM._ImageDetectedArrow = Arrow_Img
-    print("完成标注尺寸箭头检测...")
+# 判断路径边界框和文本边界框是否重叠
+def path_bbox_overlaps(path_bbox, text_bbox):
+    px1, py1, px2, py2 = path_bbox
+    tx1, ty1, tx2, ty2 = text_bbox
+    return not (px2 < tx1 or px1 > tx2 or py2 < ty1 or py1 > ty2)
 
-    ShowImage.show_image(FM._ImageDetectedArrow, "标注尺寸箭头检测")    
+# 从文本块的位置信息中移除与文本重叠的路径
+def remove_paths_in_text_area(svg_file, text_positions):
+    tree = ET.parse(svg_file)
+    root = tree.getroot()
 
-    for i in BB_Arrows:
-        P1 = i._BoundingBoxP1
-        P2 = i._BoundingBoxP2
-        Erased_Img = Eraser.EraseBox(FM._ImageCleaned, P1, P2)
-    FM._ImageCleaned = Erased_Img
+    # 查找所有路径
+    namespaces = {'svg': 'http://www.w3.org/2000/svg'}
+    paths = root.findall('.//svg:path', namespaces=namespaces)
 
-    DL_Time = time.strftime("%H hr - %M min - %S sec")
-    print("开始标注尺寸线检测 " + DL_Time + "...")    
-    segments, DimensionalLine_Img = DimensionalLinesFeature.Detect(FM)
-    FM._ImageDetectedDimensionalLine = DimensionalLine_Img
-    FM._DetectedDimensionalLine = segments
-    print("完成标注尺寸线检测...")     
-    ShowImage.show_image(FM._ImageDetectedDimensionalLine, str("标注尺寸线检测"))   
+    for path in paths:
+        path_coords = path.attrib.get('d')  # 获取路径数据
+        path_bbox = get_path_bbox(path_coords)  # 获取路径的边界框
 
-    for j in segments:
-        for i in j._Leaders:
-            P1 = i.startPoint
-            P2 = i.endPoint
-            Erased_Img = Eraser.EraseLine(FM._ImageCleaned, P1, P2)
-    FM._ImageCleaned = Erased_Img
+        # 遍历文本区域，检查路径是否与文本区域重叠
+        for text, tx, ty, tw, th in text_positions:
+            text_bbox = (tx, ty, tx + tw, ty + th)
+            if path_bbox_overlaps(path_bbox, text_bbox):
+                root.remove(path)  # 删除重叠的路径
 
-    print("开始关联标注尺寸界线方向...")
-    Cognition.ArrowHeadDirection(FM)
-    print("完成关联标注尺寸界线方向...")
-
-    TE_Time = time.strftime("%H hr - %M min - %S sec")
-    print("开始文本区域提取 " + TE_Time + "...")
-    ExtractedTextArea, TextArea_Img = TextsFeature.Detect(FM)
-    FM._ImageDetectedDimensionalText = TextArea_Img
-    FM._DetectedDimensionalText = ExtractedTextArea
-    print("完成文本区域提取...")   
-    ShowImage.show_image(FM._ImageDetectedDimensionalText, "文本区域检测")   
-
-    for i in ExtractedTextArea:
-        P1 = i._TextBoxP1
-        P2 = i._TextBoxP2
-        Erased_Img = Eraser.EraseBox(FM._ImageCleaned, P1, P2)
-    FM._ImageCleaned = Erased_Img
-
-    DC_Time = time.strftime("%H hr - %M min - %S sec")
-    print("开始关联标注 " + DC_Time + "...")
-    Dimension_correlate = Cognition.ProximityCorrelation(FM)
-    FM._DetectedDimension = Dimension_correlate
-    print("完成联标注...")
-
-    LD_Time = time.strftime("%H hr - %M min - %S sec")
-    print("开始直线检测 " + LD_Time + "...")
-    segments, DetectedLine_Img = LineSegmentsFeature.Detect(FM)
-    FM._DetectedLine = segments
-    FM._ImageDetectedLine = DetectedLine_Img
-    print("完成直线检测...")       
-    ShowImage.show_image(FM._ImageDetectedLine, "直线检测")   
-
-    print("开始支撑线的关联...")
-    SupportLinesFeature.Detect(FM)
-    print("完成支撑线的关联...")
-
-    print("开始断裂端的校正一阶段...")
-    Cognition.CorrectEnds(FM)
-    print("完成断裂端的校正一阶段...")
-
-    print("开始断裂端的校正二阶段...")
-    Cognition.JoinLineSegmentsWithinProximityTolerance(FM) 
-    print("完成断裂端的校正二阶段...")
-
-    for i in segments:
-        for ls in i:
-            P1 = ls.startPoint
-            P2 = ls.endPoint
-            Erased_Img = Eraser.EraseLine(FM._ImageCleaned, P1, P2)
-    FM._ImageCleaned = Erased_Img
-
-    print("开始实体关联...")
-    Cognition.EntityCorrelation(FM)
-    print("完成实体关联...")
-
-    CD_Time = time.strftime("%H hr - %M min - %S sec")
-    print("开始圆检测 " + CD_Time + "...")
-    detectedcircle, DetectedCircle_Img = CirclesFeature.Detect(FM)
-    FM._ImageDetectedCircle = DetectedCircle_Img
-    FM._DetectedCircle = detectedcircle
-    print("完成圆检测...")      
-    ShowImage.show_image(FM._ImageDetectedCircle, "圆检测")   
-
-    for i in detectedcircle:
-        center = i._centre
-        radius = i._radius
-        Erased_Img = Eraser.EraseCircle(FM._ImageCleaned, center, radius)
-    FM._ImageCleaned = Erased_Img
-
-    print("开始导出提取数据到I2C文件...")
-    I2CWriter.Write(FM)
-    print("完成导出提取数据到I2C文件...")
-
-    print("E开始导出提取数据到dxf文件...")
-    DXFWriter.Write(FM)
-    print("完成导出提取数据到dxf文件...")
-
-    print("Image2CAD执行完成...")
-
-
-#if __name__ == "__main__":
-#    main("Debug")
+    tree.write('output_no_text_paths.svg')  # 保存修改后的 SVG
     
+def pdf_to_images(pdf_path, output_dir=None):  
+    pdf_Dir = os.path.abspath(pdf_path)
+
+    dir = os.path.dirname(pdf_Dir)
+    # 如果没有指定输出文件夹，则默认创建 output_svg 文件夹
+    if output_dir is None:
+        output_dir = os.path.join(dir, "pdfImages")
+    
+      # 确保输出目录存在
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+     # 打开 PDF 文件   
+    with fitz.open(pdf_path) as doc:    
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+
+            # 检查页面是否包含图像资源
+            image_list = page.get_images(full=True)
+
+            if image_list:  # 如果页面包含图像
+                print(f"页面 {page_num + 1} 是图像，直接提取并保存")
+                for img_index, img in enumerate(image_list):
+                    xref = img[0]
+                    base_image = doc.extract_image(xref)
+                    image_bytes = base_image["image"]
+
+                    # 将图像保存为文件
+                    image_filename = f"page_{page_num + 1}_image_{img_index + 1}.png"
+                    image_path = os.path.join(output_dir, image_filename)
+                    with open(image_path, "wb") as img_file:
+                        img_file.write(image_bytes)
+
+                    print(f"保存图像：{image_path}")
+            else:  # 如果页面没有图像，则使用 pdf2image 转换为图像
+                print(f"页面 {page_num + 1} 不是图像，转换为图像并保存")
+                pages = convert_from_path(pdf_path, 300, first_page=page_num + 1, last_page=page_num + 1)
+                image_path = os.path.join(output_dir, f"page_{page_num + 1}.png")
+                pages[0].save(image_path, 'PNG')
+                print(f"保存图像：{image_path}")
+                
+def png_to_svg(input_path, output_folder=None):
+    """
+    将 PNG 文件或文件夹中的 PNG 转换为 DXF 格式，经过 PBM 格式的中间步骤。
+    如果输入是文件夹，则遍历其中的 PNG 文件处理；
+    如果输入是文件，则只处理该文件。
+    """
+    # 如果输入是文件夹
+    if os.path.isdir(input_path):
+        # 如果没有指定输出文件夹，则默认创建 output_svg 文件夹
+        if output_folder is None:
+            output_folder = os.path.join(input_path, "output_svg")
+        
+        # 如果输出文件夹不存在，则创建它
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+        
+        # 遍历文件夹中的所有 PNG 文件
+        process_files_in_parallel(input_path, output_folder)             
+    # 如果输入是文件
+    elif os.path.isfile(input_path) and input_path.endswith(".png"):
+        # 如果没有指定输出文件夹，则使用输入文件的目录
+        if output_folder is None:
+            output_folder = os.path.dirname(input_path)
+        
+        # 确保输出文件夹存在
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+        
+        # 处理单个文件
+        process_single_file(input_path, output_folder)
+    else:
+        raise ValueError(f"Invalid input path: {input_path}. Must be a .png file or a folder containing .png files.")
+    
+def process_files_in_parallel(input_path, output_folder, max_processes=None):
+    # 获取所有文件
+    filenames = [filename for filename in os.listdir(input_path) if filename.endswith(".png")]
+    
+    # 如果没有指定最大并发数，则使用默认值（CPU 核心数的一半）
+    if max_processes is None:
+        max_processes = max(1, cpu_count() // 2)
+    
+    # 创建进程池，限制并发数
+    with Pool(processes=max_processes) as pool:
+        # 使用 starmap 函数并行处理每个文件
+        pool.starmap(process_single_file, [(os.path.join(input_path, filename), output_folder) for filename in filenames])
+        
+def process_single_file(input_path, output_folder):
+    """
+    处理单个 PNG 文件：将其转换为 PBM，再转换为 DXF。
+    """
+    start_time = time.time()
+    # 生成 PBM 文件路径
+    filename = os.path.basename(input_path)
+    pbm_filename = os.path.splitext(filename)[0] + ".pbm"
+    output_pbm_path = os.path.join(output_folder, pbm_filename)  
+    
+    hocr_filename = os.path.splitext(filename)[0] 
+    output_hocrPath = os.path.join(output_folder, hocr_filename)          
+    get_text_hocr(input_path, output_hocrPath)
+    end_time = time.time()  
+    print(f"get_text_hocr Execution time: {end_time - start_time:.2f} seconds")
+    start_time = end_time
+    # 调用函数将 PNG 转换为 PBM
+    convert_png_to_pbm(input_path, output_pbm_path)
+    end_time = time.time()  
+    print(f"convert_png_to_pbm Execution time: {end_time - start_time:.2f} seconds")
+    start_time = end_time
+    
+    # 生成 DXF 文件路径
+    dxf_filename = os.path.splitext(filename)[0] + ".dxf"
+    output_dxf_path = os.path.join(output_folder, dxf_filename)
+    convert_pbm_to_dxf(output_pbm_path, output_dxf_path)
+    end_time = time.time()  
+    print(f"convert_pbm_to_dxf Execution time: {end_time - start_time:.2f} seconds")
+    start_time = end_time
+    
+    # 提取多边形
+    polygons = extract_polygons_from_dxf(output_dxf_path)
+    end_time = time.time()  
+    print(f"extract_polygons_from_dxf Execution time: {end_time - start_time:.2f} seconds")
+    start_time = end_time
+
+    # 计算边界框
+    # bounds = calculate_bounds(polygons)
+
+    # 生成 Voronoi 图
+    # ridges = perform_voronoi_analysis(polygons)
+    
+     # 初始化提取器（设置最大间距为 2.5）
+    # extractor = OptimizedRidgeExtractor(polygons, max_distance=10)
+    attributes = {"id": 1, "name": "polygon", "valid": True}
+    max_workers = max(1, os.cpu_count() // 2)
+    with ThreadPoolExecutor(max_workers) as executor:
+        multi_polygon = convert_to_multipolygon(polygons)      
+         # 简化 multi_polygon
+        simplified_polygon = multi_polygon.simplify(tolerance=0.1, preserve_topology=True)  
+    end_time = time.time()  
+    print(f"convert_to_multipolygon Execution time: {end_time - start_time:.2f} seconds")
+    start_time = end_time
+    try:
+        # 增加容差，减少计算量
+        centerlines = Centerline(simplified_polygon, 0.5) 
+    except Exception as e:
+        print(f"Error calculating centerlines: {e}")
+        return
+    end_time = time.time()  
+    print(f"Centerline Execution time: {end_time - start_time:.2f} seconds")
+    start_time = end_time
+    # longest_paths = process_multilinestring(centerlines.geometry)
+   
+    # centerlines = get_centerline(multi_polygon)       
+    merged_lines = merge_lines_with_hough(centerlines.geometry, 0) 
+    end_time = time.time()  
+    print(f"merge_lines_with_hough Execution time: {end_time - start_time:.2f} seconds")
+    start_time = end_time
+
+    # 追加到原始 DXF 并保存
+    newdxf_filename = os.path.splitext(filename)[0] + "_new.dxf"
+    output_newdxf_path = os.path.join(output_folder, newdxf_filename)
+    # processed = process_ridges(centerlines.geometry, 0.1, 0.5, 0.1)
+    # processed = merge_with_dbscan(centerlines.geometry)
+    # ocr_text_result = get_text(input_path)
+    shutil.copy2(output_dxf_path, output_newdxf_path)
+    text_positions = parse_hocr_optimized(output_hocrPath + ".hocr")
+    append_ridgesAndText_to_dxf(output_newdxf_path, centerlines.geometry, merged_lines, [])
+    end_time = time.time()  
+    print(f"append dxf Execution time: {end_time - start_time:.2f} seconds")
+    start_time = end_time
+
+    print(f"Voronoi ridges have been added to {output_dxf_path}.")
+            
+    # os.remove(output_pbmPath)
+    
+    # text_positions = parse_hocr_optimized(output_hocrPath + ".hocr")
+    # svgText_fileName = os.path.splitext(filename)[0] + "_text.svg"
+    # output_svgTextPath = os.path.join(output_folder, svgText_fileName) 
+    # insert_text_into_svg(output_svgPath, text_positions, output_svgTextPath)       
+            
+def main():    
+    # 设置命令行参数解析器
+    parser = argparse.ArgumentParser(description="Process PDF and PNG files.")
+    parser.add_argument('action', choices=['pdf2images', 'png2svg'], help="Choose the action to perform: 'pdf2images' or 'png2svg'")
+    parser.add_argument('input_path', help="Input file or folder path.")
+    parser.add_argument('output_path', nargs='?', help="Output file or folder path. If not provided, it will be auto-generated based on input_path.")
+    
+    # 解析命令行参数
+    args = parser.parse_args()
+    
+    # 根据选择的 action 执行相应的函数
+    if args.action == 'pdf2images':
+        pdf_to_images(args.input_path, args.output_path)
+    elif args.action == 'png2svg':
+        png_to_svg(args.input_path, args.output_path)
+
 if __name__ == "__main__":
-    main(sys.argv[1])
-
+    main()
 

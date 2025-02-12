@@ -135,15 +135,15 @@ class Centerline:
                 if linestring is not None:
                     linestrings.append(linestring)
 
-        # str_tree = STRtree(linestrings)
-        # linestrings_indexes = str_tree.query(
-        #     self._input_geometry, predicate="contains"
-        # )
-        # contained_linestrings = [linestrings[i] for i in linestrings_indexes]
-        # if len(contained_linestrings) < 2:
-        #     raise exceptions.TooFewRidgesError
+        str_tree = STRtree(linestrings)
+        linestrings_indexes = str_tree.query(
+            self._input_geometry, predicate="contains"
+        )
+        contained_linestrings = [linestrings[i] for i in linestrings_indexes]
+        if len(contained_linestrings) < 2:
+            raise exceptions.TooFewRidgesError
 
-        return unary_union(linestrings)  
+        return unary_union(contained_linestrings)  
     
     def _process_ridge(self, ridge, vertices):
         """处理单个 ridge"""
