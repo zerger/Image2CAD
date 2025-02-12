@@ -7,6 +7,7 @@ from scipy.spatial import Voronoi
 from shapely.geometry import LineString, MultiLineString, MultiPolygon, Polygon
 from shapely.ops import unary_union
 from shapely.strtree import STRtree
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from . import exceptions
 import os
@@ -79,6 +80,46 @@ class Centerline:
         """
         for key in attributes:
             setattr(self, key, attributes.get(key))
+            
+    @staticmethod
+    def merge_lines_to_polylines(linestrings):
+        """
+        将多个小线段合并为多段线（Polyline）
+        :param linestrings: 包含多个 LineString 的列表
+        :return: 合并后的 MultiLineString
+        """
+        # 构建图
+        graph = defaultdict(list)
+        for line in linestrings:
+            start, end = line.coords[0], line.coords[-1]
+            graph[start].append(end)
+            graph[end].append(start)
+
+        # 深度优先搜索（DFS）查找连续路径
+        visited = set()
+        polylines = []
+
+        def bfs(start_node):
+            queue = deque()
+            queue.append(start_node)
+            path = []
+            while queue:
+                node = queue.popleft()
+                if node not in visited:
+                    visited.add(node)
+                    path.append(node)
+                    for neighbor in graph[node]:
+                        queue.append(neighbor)
+            return path
+
+        for node in graph:
+            if node not in visited:
+                path = bfs(node)
+                if len(path) >= 2:  # 至少需要两个点才能构成线段
+                    polylines.append(LineString(path))
+
+        # 返回合并后的多段线
+        return MultiLineString(polylines)
 
     def _construct_centerline(self):
         vertices, ridges = self._get_voronoi_vertices_and_ridges()
@@ -87,22 +128,22 @@ class Centerline:
         # 设置最大并发数为 CPU 核心数的一半
         max_workers = max(1, os.cpu_count() // 2)
         # 并行处理每个 ridge
-        with ThreadPoolExecutor() as executor:
+        with ThreadPoolExecutor(max_workers) as executor:
             futures = [executor.submit(self._process_ridge, ridge, vertices) for ridge in ridges]
             for future in as_completed(futures):
                 linestring = future.result()
                 if linestring is not None:
                     linestrings.append(linestring)
 
-        str_tree = STRtree(linestrings)
-        linestrings_indexes = str_tree.query(
-            self._input_geometry, predicate="contains"
-        )
-        contained_linestrings = [linestrings[i] for i in linestrings_indexes]
-        if len(contained_linestrings) < 2:
-            raise exceptions.TooFewRidgesError
+        # str_tree = STRtree(linestrings)
+        # linestrings_indexes = str_tree.query(
+        #     self._input_geometry, predicate="contains"
+        # )
+        # contained_linestrings = [linestrings[i] for i in linestrings_indexes]
+        # if len(contained_linestrings) < 2:
+        #     raise exceptions.TooFewRidgesError
 
-        return unary_union(contained_linestrings)  
+        return unary_union(linestrings)  
     
     def _process_ridge(self, ridge, vertices):
         """处理单个 ridge"""

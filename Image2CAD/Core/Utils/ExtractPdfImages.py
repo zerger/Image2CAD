@@ -110,9 +110,9 @@ def extract_polygons_from_dxf(file_path):
             if len(points) >= 3:
                 return points
         return None
-
+    max_workers = max(1, os.cpu_count() // 2)
     # 使用线程池并行处理实体
-    with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
+    with ThreadPoolExecutor(max_workers) as executor:
         futures = [executor.submit(process_entity, entity) for entity in entities]
         for future in futures:
             result = future.result()
@@ -317,9 +317,31 @@ def merge_lines_with_hough(lines, padding=0):
             points.append([start_mapped[0], start_mapped[1], end_mapped[0], end_mapped[1]])
             # 在图像上绘制线段
             cv2.line(img, start_mapped, end_mapped, 255, 1)
+            
+    # 检查输入图像通道数
+    if len(img.shape) == 2 or img.shape[2] == 1:
+        # 图像已经是灰度图，无需转换
+        gray = img
+    else:
+        # 图像是彩色图，转换为灰度图
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # 高斯模糊
+    blurred = cv2.GaussianBlur(gray, ksize=(5, 5), sigmaX=0)
 
+    # 二值化
+    _, binary = cv2.threshold(blurred, thresh=127, maxval=255, type=cv2.THRESH_BINARY)
+
+    # 边缘检测
+    edges = cv2.Canny(binary, 50, 150, apertureSize=3)
     # 使用霍夫变换检测线段
-    lines_detected = cv2.HoughLinesP(img, 1, np.pi / 180, threshold=50, minLineLength=50, maxLineGap=10)
+    lines_detected = cv2.HoughLinesP(
+        img,
+        rho=1,                          # 距离分辨率
+        theta=np.pi / 180,              # 角度分辨率
+        threshold=20,                   # 累加器阈值
+        minLineLength=10,               # 线段的最小长度
+        maxLineGap=20                   # 线段之间的最大间隔
+    )
 
     # 将检测到的线段映射回实际坐标
     merged_lines = []
@@ -782,11 +804,11 @@ def convert_pbm_to_dxf(pbm_path, dxf_path):
         '-b', 'dxf',                      # 指定输出格式为 DXF
         '-o', dxf_path,                   # 输出文件路径
         '-z', 'minority',                 # 路径分解策略
-        '-t', '5',                        # 忽略小噪点的大小
-        '-a', '0.1',                        # 保留清晰的拐角
+        '-t', '10',                        # 忽略小噪点的大小
+        '-a', '0.5',                        # 保留清晰的拐角
         # '-n',                             # 禁用曲线优化
-        '-O', '0.1',                      # 高精度曲线优化容差
-        '-u', '20',                        # 输出量化单位        
+        '-O', '0.5',                      # 高精度曲线优化容差
+        '-u', '50',                        # 输出量化单位        
     ]
     
     # 执行 Potrace 命令
@@ -1044,14 +1066,17 @@ def process_single_file(input_path, output_folder):
      # 初始化提取器（设置最大间距为 2.5）
     # extractor = OptimizedRidgeExtractor(polygons, max_distance=10)
     attributes = {"id": 1, "name": "polygon", "valid": True}
-    with ThreadPoolExecutor() as executor:
-        multi_polygon = convert_to_multipolygon(polygons)        
+    max_workers = max(1, os.cpu_count() // 2)
+    with ThreadPoolExecutor(max_workers) as executor:
+        multi_polygon = convert_to_multipolygon(polygons)      
+         # 简化 multi_polygon
+        simplified_polygon = multi_polygon.simplify(tolerance=0.1, preserve_topology=True)  
     end_time = time.time()  
     print(f"convert_to_multipolygon Execution time: {end_time - start_time:.2f} seconds")
     start_time = end_time
     try:
         # 增加容差，减少计算量
-        centerlines = Centerline(multi_polygon, 0.5) 
+        centerlines = Centerline(simplified_polygon, 0.5) 
     except Exception as e:
         print(f"Error calculating centerlines: {e}")
         return
