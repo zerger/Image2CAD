@@ -1,5 +1,4 @@
 import os
-import fitz  # PyMuPDF
 from pdf2image import convert_from_path
 from lxml import etree
 import xml.etree.ElementTree as ET
@@ -20,7 +19,7 @@ from shapely.geometry import Polygon, MultiPolygon, MultiLineString, LineString
 from scipy.interpolate import splprep, splev
 from scipy.spatial import KDTree
 from multiprocessing import Pool, cpu_count
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import shutil
 import time
 import os
@@ -218,16 +217,16 @@ def convert_pbm_to_dxf(pbm_path, dxf_path):
     # 执行 potrace 命令  
     # 定义 Potrace 参数
     params = [
-        'D:/Image2CADPy/Image2CAD/potrace',  # potrace 的路径
-        pbm_path,                         # 输入文件路径
-        '-b', 'dxf',                      # 指定输出格式为 DXF
-        '-o', dxf_path,                   # 输出文件路径
-        '-z', 'minority',                 # 路径分解策略
-        '-t', '10',                        # 忽略小噪点的大小
-        '-a', '0.5',                        # 保留清晰的拐角
-        # '-n',                             # 禁用曲线优化
-        '-O', '0.5',                      # 高精度曲线优化容差
-        '-u', '50',                        # 输出量化单位        
+        'D:/Image2CADPy/Image2CAD/potrace',
+        pbm_path,
+        '-b', 'dxf',
+        '-o', dxf_path,
+        '-z', 'majority',       # 保持主方向特征
+        '-t', '25',             # 严格保留细节
+        '-a', '0.15',           # 接近直线模式
+        '-O', '0.5',            # 高精度优化    
+        '-u', '50',             # 输出量化单位      
+        '-n',
     ]
     
     # 执行 Potrace 命令
@@ -327,47 +326,32 @@ def remove_paths_in_text_area(svg_file, text_positions):
 
     tree.write('output_no_text_paths.svg')  # 保存修改后的 SVG
     
-def pdf_to_images(pdf_path, output_dir=None):  
+def pdf_to_images(pdf_path, output_dir=None):
+    # 获取 PDF 文件的绝对路径
     pdf_Dir = os.path.abspath(pdf_path)
-
     dir = os.path.dirname(pdf_Dir)
-    # 如果没有指定输出文件夹，则默认创建 output_svg 文件夹
+
+    # 如果没有指定输出文件夹，则默认创建 pdfImages 文件夹
     if output_dir is None:
         output_dir = os.path.join(dir, "pdfImages")
-    
-      # 确保输出目录存在
+
+    # 确保输出目录存在
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    
-     # 打开 PDF 文件   
-    with fitz.open(pdf_path) as doc:    
-        for page_num in range(len(doc)):
-            page = doc.load_page(page_num)
 
-            # 检查页面是否包含图像资源
-            image_list = page.get_images(full=True)
+    # 使用 pdf2image 将 PDF 转换为图像
+    try:
+        # 转换所有页面为图像
+        pages = convert_from_path(pdf_path, dpi=72, fmt='png')
 
-            if image_list:  # 如果页面包含图像
-                print(f"页面 {page_num + 1} 是图像，直接提取并保存")
-                for img_index, img in enumerate(image_list):
-                    xref = img[0]
-                    base_image = doc.extract_image(xref)
-                    image_bytes = base_image["image"]
+        # 保存每一页为图像文件
+        for page_num, page in enumerate(pages):
+            image_path = os.path.join(output_dir, f"page_{page_num + 1}.png")
+            page.save(image_path, 'PNG')
+            print(f"保存图像：{image_path}")
+    except Exception as e:
+        print(f"转换 PDF 为图像时出错：{e}")
 
-                    # 将图像保存为文件
-                    image_filename = f"page_{page_num + 1}_image_{img_index + 1}.png"
-                    image_path = os.path.join(output_dir, image_filename)
-                    with open(image_path, "wb") as img_file:
-                        img_file.write(image_bytes)
-
-                    print(f"保存图像：{image_path}")
-            else:  # 如果页面没有图像，则使用 pdf2image 转换为图像
-                print(f"页面 {page_num + 1} 不是图像，转换为图像并保存")
-                pages = convert_from_path(pdf_path, 300, first_page=page_num + 1, last_page=page_num + 1)
-                image_path = os.path.join(output_dir, f"page_{page_num + 1}.png")
-                pages[0].save(image_path, 'PNG')
-                print(f"保存图像：{image_path}")
-                
 def png_to_svg(input_path, output_folder=None):
     """
     将 PNG 文件或文件夹中的 PNG 转换为 DXF 格式，经过 PBM 格式的中间步骤。
@@ -413,7 +397,84 @@ def process_files_in_parallel(input_path, output_folder, max_processes=None):
     with Pool(processes=max_processes) as pool:
         # 使用 starmap 函数并行处理每个文件
         pool.starmap(process_single_file, [(os.path.join(input_path, filename), output_folder) for filename in filenames])
+ 
+def repair_multipolygon(multi_poly, max_processes=None):
+    """修复 MultiPolygon 几何体，使用并行处理每个子多边形"""
+    valid_polys = []
+    
+    if max_processes is None:
+        max_processes = max(1, cpu_count() // 2)
+    # 使用线程池并行处理每个子多边形
+    with ThreadPoolExecutor(max_processes) as executor:
+        # 提交所有任务
+        future_to_poly = {executor.submit(repair_single_polygon, poly): poly for poly in multi_poly.geoms}      
+        # 等待任务完成
+        for future in as_completed(future_to_poly):
+            try:
+                repaired = future.result()
+                if repaired.is_valid and not repaired.is_empty:
+                    valid_polys.append(repaired)
+            except Exception as e:
+                print(f"无法修复子多边形：{str(e)}")
+    
+    # 返回有效的 MultiPolygon
+    # 如果需要进一步过滤确保返回的是 Polygon 类型：
+    return MultiPolygon([p for p in valid_polys if isinstance(p, Polygon) and p.is_valid])
+
+
+def repair_single_polygon(poly):
+    """修复单个多边形"""
+    # 坐标对齐
+    snapped = snap_to_grid(poly, 0.01)
+    
+    # 缓冲修复
+    buffered = snapped.buffer(0.01).buffer(-0.02).buffer(0.01)
+    
+    # 有效性检查
+    if not buffered.is_valid:
+        raise Exception("子多边形修复失败")
+    
+    return buffered
+
+
+def snap_to_grid(geom, precision=0.01):
+    """处理多维坐标的网格对齐"""
+    def _round_coord(coord):
+        # 处理任意维度坐标 (x, y, [z, ...])
+        return tuple(round(c / precision) * precision for c in coord[:2])  # 只处理前两个维度
+    
+    if geom.geom_type == 'Polygon':
+        # 处理外环
+        ext_rounded = [_round_coord(c) for c in geom.exterior.coords]
         
+        # 处理内环
+        int_rounded = [
+            [_round_coord(c) for c in interior.coords]
+            for interior in geom.interiors
+        ]
+        
+        return Polygon(ext_rounded, int_rounded)
+    else:
+        return geom
+
+
+def process_geometry_for_centerline(simplified_polygon):
+    """修复并生成Centerline"""
+    try:
+        if isinstance(simplified_polygon, MultiPolygon):
+            # 如果是 MultiPolygon，修复并确保返回有效的 MultiPolygon
+            repaired_geom = repair_multipolygon(simplified_polygon)
+            return [Centerline(repaired_geom, 3, 2)]  # 将修复后的 MultiPolygon 传入 Centerline
+        else:
+            # 如果是 Polygon，直接处理
+            repaired_geom = repair_single_polygon(simplified_polygon)
+            return [Centerline(repaired_geom, 3, 2)]  # 返回一个包含 centerline 的列表
+    except Exception as e:
+        print(f"Error calculating centerlines: {e}")
+        return []
+
+
+       
 def process_single_file(input_path, output_folder):
     """
     处理单个 PNG 文件：将其转换为 PBM，再转换为 DXF。
@@ -468,8 +529,10 @@ def process_single_file(input_path, output_folder):
     print(f"convert_to_multipolygon Execution time: {end_time - start_time:.2f} seconds")
     start_time = end_time
     try:
-        # 增加容差，减少计算量
-        centerlines = Centerline(simplified_polygon, 0.5) 
+        centerlines = process_geometry_for_centerline(simplified_polygon)
+        if not centerlines:
+            print(f"Error calculating centerlines: is Empty")
+            return 
     except Exception as e:
         print(f"Error calculating centerlines: {e}")
         return
@@ -504,8 +567,9 @@ def process_single_file(input_path, output_folder):
     # text_positions = parse_hocr_optimized(output_hocrPath + ".hocr")
     # svgText_fileName = os.path.splitext(filename)[0] + "_text.svg"
     # output_svgTextPath = os.path.join(output_folder, svgText_fileName) 
-    # insert_text_into_svg(output_svgPath, text_positions, output_svgTextPath)       
-            
+    # insert_text_into_svg(output_svgPath, text_positions, output_svgTextPath)    
+
+
 def main():    
     # 设置命令行参数解析器
     parser = argparse.ArgumentParser(description="Process PDF and PNG files.")
