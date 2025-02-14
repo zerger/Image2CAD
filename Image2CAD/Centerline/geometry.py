@@ -30,28 +30,17 @@ class Centerline:
         :py:class:`shapely.geometry.MultiPolygon`
     """
 
-    def __init__(self, input_geometry, interpolation_distance=0.5, simplify_tolerance=0.5, **attributes):
+    def __init__(self, input_geometry, interpolation_distance=0.5, **attributes):
         self._input_geometry = input_geometry
-        self._interpolation_distance = abs(interpolation_distance)
-        self._simplify_tolerance = simplify_tolerance  # 新增简化容差参数
+        self._interpolation_distance = abs(interpolation_distance)      
 
         if not self.input_geometry_is_valid():
             raise exceptions.InvalidInputTypeError
-        # 简化多边形
-        self._input_geometry = self._simplify_geometry(self._input_geometry)       
+        # 简化多边形      
         self._min_x, self._min_y = self._get_reduced_coordinates()
         self.assign_attributes_to_instance(attributes)
 
         self.geometry = MultiLineString(lines=self._construct_centerline())
-        
-    def _simplify_geometry(self, geometry):
-        """简化输入几何体，减少顶点数量"""
-        if isinstance(geometry, Polygon):
-            return geometry.simplify(self._simplify_tolerance, preserve_topology=True)
-        elif isinstance(geometry, MultiPolygon):
-            return MultiPolygon([polygon.simplify(self._simplify_tolerance, preserve_topology=True) 
-                                for polygon in geometry.geoms])
-        return geometry
          
     def input_geometry_is_valid(self):
         """Input geometry is of a :py:class:`shapely.geometry.Polygon`

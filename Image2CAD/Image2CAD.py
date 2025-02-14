@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import shutil
 import time
 import os
+import tempfile
       
 # 将 PNG 转换为 PBM 格式
 def convert_png_to_pbm(png_path, pbm_path):
@@ -148,7 +149,7 @@ def merge_lines_with_hough(lines, padding=0):
 
     return merged_lines  
 
-def append_ridgesAndText_to_dxf(dxf_file, ridges, merged_lines, text_result):
+def append_to_dxf(dxf_file, ridges, merged_lines, text_result):
     """
     将 Voronoi 图的边和文本追加到现有的 DXF 文件中
     :param dxf_file: 现有的 DXF 文件路径
@@ -211,7 +212,7 @@ def append_ridgesAndText_to_dxf(dxf_file, ridges, merged_lines, text_result):
 
     # 保存修改后的 DXF 文件
     doc.saveas(dxf_file)  
-
+        
 # 使用 Potrace 转换 PBM 为 dxf
 def convert_pbm_to_dxf(pbm_path, dxf_path):   
     # 执行 potrace 命令  
@@ -464,14 +465,14 @@ def process_geometry_for_centerline(simplified_polygon):
         if isinstance(simplified_polygon, MultiPolygon):
             # 如果是 MultiPolygon，修复并确保返回有效的 MultiPolygon
             repaired_geom = repair_multipolygon(simplified_polygon)
-            return [Centerline(repaired_geom, 3, 2)]  # 将修复后的 MultiPolygon 传入 Centerline
+            return Centerline(repaired_geom, 5) 
         else:
             # 如果是 Polygon，直接处理
             repaired_geom = repair_single_polygon(simplified_polygon)
-            return [Centerline(repaired_geom, 3, 2)]  # 返回一个包含 centerline 的列表
+            return Centerline(repaired_geom, 5)
     except Exception as e:
         print(f"Error calculating centerlines: {e}")
-        return []
+        return 
 
 
        
@@ -555,7 +556,7 @@ def process_single_file(input_path, output_folder):
     # ocr_text_result = get_text(input_path)
     shutil.copy2(output_dxf_path, output_newdxf_path)
     text_positions = parse_hocr_optimized(output_hocrPath + ".hocr")
-    append_ridgesAndText_to_dxf(output_newdxf_path, centerlines.geometry, merged_lines, [])
+    append_to_dxf(output_newdxf_path, [], merged_lines, [])
     end_time = time.time()  
     print(f"append dxf Execution time: {end_time - start_time:.2f} seconds")
     start_time = end_time
