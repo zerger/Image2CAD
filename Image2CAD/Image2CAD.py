@@ -549,7 +549,7 @@ def process_single_file(input_path, output_folder):
     start_time = end_time
 
     # 追加到原始 DXF 并保存
-    newdxf_filename = os.path.splitext(filename)[0] + "_new.dxf"
+    newdxf_filename = os.path.splitext(filename)[0] + "_newPy.dxf"
     output_newdxf_path = os.path.join(output_folder, newdxf_filename)
     # processed = process_ridges(centerlines.geometry, 0.1, 0.5, 0.1)
     # processed = merge_with_dbscan(centerlines.geometry)

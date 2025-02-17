@@ -102,7 +102,7 @@ int main()
     }
 
     // 准备参数（文件路径）
-    const char* file_path = R"(D:/Image2CADPy/TestData/pdfImages/page_28_image_1.png)";  // 使用原始字符串避免转义问题
+    const char* file_path = R"(D:/Image2CADPy/TestData/pdfImages/page_54_image_1.png)";  // 使用原始字符串避免转义问题
     PyObject* pArgs = PyTuple_New(1);
     PyTuple_SetItem(pArgs, 0, PyUnicode_FromString(file_path));
 
