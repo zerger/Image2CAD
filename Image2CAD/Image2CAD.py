@@ -152,6 +152,52 @@ def merge_lines_with_hough(lines, padding=0):
 
     return merged_lines  
 
+def setup_text_styles(doc):
+    style = doc.styles.new('工程字体')
+    style.font = 'simfang.ttf'  # 仿宋字体
+    style.width = 0.7  # 长宽比
+
+def add_text(msp, text, position, height, layer='文本'):
+    text_entity = msp.add_text(
+        text,
+        dxfattribs={
+            'height': height,
+            'color': 5,
+            'layer': layer,
+            'style': '工程字体',  # 需要提前定义文字样式           
+        }
+    )
+    # 正确设置对齐基准点
+    text_entity.set_placement(
+        position,  # 基准点位置
+        align=TextEntityAlignment.LEFT 
+    )
+    return text_entity
+
+def add_ridges(msp, ridges):
+    # 添加 Voronoi 图的边
+    if isinstance(ridges, LineString):
+        msp.add_line(start=ridges.coords[0], end=ridges.coords[-1], dxfattribs={"color": 1, 'layer': '脊线'})
+    elif isinstance(ridges, MultiLineString):
+        for line in ridges.geoms:
+            for start, end in zip(line.coords[:-1], line.coords[1:]):
+                msp.add_line(start=start, end=end, dxfattribs={"color": 1, 'layer': '脊线'})
+    elif isinstance(ridges, list):  # 如果 ridges 是一个列表
+        for child in ridges:
+            if isinstance(child, LineString):  # 如果是 LineString 类型
+                msp.add_line(start=child.coords[0], end=child.coords[-1], dxfattribs={"color": 1, 'layer': '脊线'})
+            elif isinstance(child, MultiLineString):  # 如果是 MultiLineString 类型
+                for line in child.geoms:
+                    for start, end in zip(line.coords[:-1], line.coords[1:]):
+                        msp.add_line(start=start, end=end, dxfattribs={"color": 1, 'layer': '脊线'})
+            else:
+                for contour in ridges:
+                    edge_coords = []
+                    for pt in contour:
+                        edge_coords.append(pt)
+                    if edge_coords:
+                        msp.add_lwpolyline(edge_coords, close=False, dxfattribs={"color": 1, 'layer': '脊线'})
+    
 def append_to_dxf(dxf_file, ridges, merged_lines, text_result):
     """
     将 Voronoi 图的边和文本追加到现有的 DXF 文件中
@@ -168,29 +214,24 @@ def append_to_dxf(dxf_file, ridges, merged_lines, text_result):
         return
 
     msp = doc.modelspace()
-
-    # 添加 Voronoi 图的边
-    if isinstance(ridges, LineString):
-        msp.add_line(start=ridges.coords[0], end=ridges.coords[-1], dxfattribs={"color": 1})
-    elif isinstance(ridges, MultiLineString):
-        for line in ridges.geoms:
-            for start, end in zip(line.coords[:-1], line.coords[1:]):
-                msp.add_line(start=start, end=end, dxfattribs={"color": 1})
-    elif isinstance(ridges, list):  # 如果 ridges 是一个列表
-        for child in ridges:
-            if isinstance(child, LineString):  # 如果是 LineString 类型
-                msp.add_line(start=child.coords[0], end=child.coords[-1], dxfattribs={"color": 1})
-            elif isinstance(child, MultiLineString):  # 如果是 MultiLineString 类型
-                for line in child.geoms:
-                    for start, end in zip(line.coords[:-1], line.coords[1:]):
-                        msp.add_line(start=start, end=end, dxfattribs={"color": 1})
-            else:
-                for contour in ridges:
-                    edge_coords = []
-                    for pt in contour:
-                        edge_coords.append(pt)
-                    if edge_coords:
-                        msp.add_lwpolyline(edge_coords, close=False, dxfattribs={"color": 1})
+    
+    # 创建标准图层配置
+    layers = {
+        '脊线': {'color': 1, 'linetype': 'CONTINUOUS', 'lineweight': 0.15},        
+        '中心线': {'color': 2, 'linetype': 'CENTER', 'lineweight': 0.30},
+        '文本': {'color': 5, 'linetype': 'HIDDEN', 'lineweight': 0.15}
+    }
+    
+    # 初始化图层
+    for layer_name, props in layers.items():
+        doc.layers.add(name=layer_name)
+        layer = doc.layers.get(layer_name)
+        layer.color = props['color']
+        layer.linetype = props['linetype']
+        layer.lineweight = props['lineweight']
+    setup_text_styles(doc)
+    
+    add_ridges(msp, ridges)
 
     # 添加合并后的线段
     for line in merged_lines:
@@ -200,7 +241,7 @@ def append_to_dxf(dxf_file, ridges, merged_lines, text_result):
             (x1, y1), (x2, y2) = line
         else:
             raise ValueError(f"无效的线段格式: {line}")
-        msp.add_line(start=(x1, y1), end=(x2, y2), dxfattribs={"color": 2})
+        msp.add_line(start=(x1, y1), end=(x2, y2), dxfattribs={"color": 2, 'layer': '中心线'})
 
     words, page_height = text_result
     if page_height is not None:
@@ -209,9 +250,7 @@ def append_to_dxf(dxf_file, ridges, merged_lines, text_result):
             center_x, center_y, height = convert_to_dxf_coords(x0, y0, x1, y1, page_height)
             if height <= 0:
                 continue
-            msp.add_text(text, dxfattribs={'height': height, 'color': 5}).set_placement(
-                (center_x, center_y), align=TextEntityAlignment.MIDDLE_CENTER
-            )
+            add_text(msp, text, (center_x, center_y), height, layer='文本')           
 
     # 保存修改后的 DXF 文件
     doc.saveas(dxf_file)  
@@ -236,7 +275,7 @@ def convert_pbm_to_dxf(pbm_path, dxf_path):
     # 执行 Potrace 命令
     try:
         subprocess.run(params, check=True)
-        print(f"DXF file successfully generated")
+        print(f"Potrace execution successfully generated")
     except subprocess.CalledProcessError as e:
         print(f"Error during Potrace execution: {e}")
     except FileNotFoundError:
