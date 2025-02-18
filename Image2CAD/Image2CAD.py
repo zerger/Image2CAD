@@ -1,5 +1,5 @@
 import os
-from pdf2image import convert_from_path
+import fitz  # PyMuPDF
 from lxml import etree
 import xml.etree.ElementTree as ET
 import argparse
@@ -23,8 +23,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import shutil
 import time
 import os
+import re
 import tempfile
-      
+import threading
+     
+print_lock = threading.Lock()   
 # 将 PNG 转换为 PBM 格式
 def convert_png_to_pbm(png_path, pbm_path):
     img = cv2.imread(png_path)  
@@ -199,16 +202,16 @@ def append_to_dxf(dxf_file, ridges, merged_lines, text_result):
             raise ValueError(f"无效的线段格式: {line}")
         msp.add_line(start=(x1, y1), end=(x2, y2), dxfattribs={"color": 2})
 
-    # 添加文本
-    for text, x0, y0, x1, y1 in text_result:
-        center_x = (x0 + x1) / 2
-        center_y = (y0 + y1) / 2
-        height = y1 - y0  # 计算文字的高度
-        if height <= 0:
-            continue
-        msp.add_text(text, dxfattribs={'height': height, 'color': 5}).set_placement(
-            (center_x, center_y), align=TextEntityAlignment.MIDDLE_CENTER
-        )
+    words, page_height = text_result
+    if page_height is not None:
+        # 添加文本
+        for text, x0, y0, x1, y1 in words:
+            center_x, center_y, height = convert_to_dxf_coords(x0, y0, x1, y1, page_height)
+            if height <= 0:
+                continue
+            msp.add_text(text, dxfattribs={'height': height, 'color': 5}).set_placement(
+                (center_x, center_y), align=TextEntityAlignment.MIDDLE_CENTER
+            )
 
     # 保存修改后的 DXF 文件
     doc.saveas(dxf_file)  
@@ -223,56 +226,106 @@ def convert_pbm_to_dxf(pbm_path, dxf_path):
         '-b', 'dxf',
         '-o', dxf_path,
         '-z', 'majority',       # 保持主方向特征
-        '-t', '25',             # 严格保留细节
+        '-t', '5',              # 严格保留细节
         '-a', '0.15',           # 接近直线模式
         '-O', '0.5',            # 高精度优化    
-        '-u', '50',             # 输出量化单位      
+        '-u', '10',             # 输出量化单位      
         '-n',
     ]
     
     # 执行 Potrace 命令
     try:
         subprocess.run(params, check=True)
-        print(f"DXF file successfully generated: {dxf_path}")
+        print(f"DXF file successfully generated")
     except subprocess.CalledProcessError as e:
         print(f"Error during Potrace execution: {e}")
     except FileNotFoundError:
         print("Potrace executable not found. Please check the path.")
     
 def get_text_hocr(input_path, output_path):
-    subprocess.run(['E:/Program Files/Tesseract-OCR/tesseract.exe', input_path, output_path, '-c', 'tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ', '--psm', '6', '-c', 'tessedit_create_hocr=1'])  
+    cmd = [
+        'E:/Program Files/Tesseract-OCR/tesseract.exe',
+        input_path,
+        output_path,
+        '-c', 'tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',
+        '--psm', '11',  # 改为PSM 11（稀疏文本自动方向）
+        '-c', 'textord_orientation_fix=1',  # 启用方向修正
+        '-c', 'tessedit_create_hocr=1',
+        '-c', 'preserve_interword_spaces=1',  # 保持方向校正后的空格
+        '--oem', '1'  # 使用LSTM引擎
+    ]
+    
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        check=True
+    )
+    
+    # 检查输出日志中的方向信息
+    if 'Orientation:' in result.stderr:
+        print("检测到文本方向调整")
+    
+    return result
     
 # 解析 hocr 文件，提取文本块的位置
 def parse_hocr_optimized(hocr_file):
-    # 读取 hOCR 文件
+    """
+    解析 hOCR 文件，提取每个单词的文本和 bbox 坐标，
+    同时从 ocr_page 元素中提取页面高度（依据 bbox）和 DPI 信息（可扩展）。
+    
+    返回：
+      text_positions: 每个元素为 (text, x0, y0, x1, y1)
+      page_height: 页面高度（像素），用于坐标转换
+    """
     with open(hocr_file, 'r', encoding='utf-8') as file:
         hocr_content = file.read()
 
     text_positions = []
+    page_height = None  # 页面高度：将从 ocr_page 的 bbox 中提取
     try:
-        # 使用 BeautifulSoup 解析 hOCR 内容
         soup = BeautifulSoup(hocr_content, 'html.parser')
         
-        # 遍历每个包含文本的 ocrx_word 标签
+        # 从 ocr_page 标签中解析页面 bbox 信息
+        ocr_page = soup.find('div', class_='ocr_page')
+        if ocr_page:
+            page_title = ocr_page.get('title', '')
+            # 例如: 'image "D:/..."; bbox 0 0 377 262; ppageno 0; scan_res 96 96'
+            m_bbox = re.search(r'bbox\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)', page_title)
+            if m_bbox:
+                page_x0, page_y0, page_x1, page_y1 = map(int, m_bbox.groups())
+                page_height = page_y1 - page_y0  # 例如 262 - 0 = 262
+
+        # 遍历所有包含文本的 ocrx_word 标签
         for word_element in soup.find_all('span', class_='ocrx_word'):
-            # 提取坐标和文本
             coords = word_element.get('title', '')
             text = word_element.text.strip() if word_element.text else ''
-            
-            # 获取 bbox 坐标 (x0, y0, x1, y1)
-            if coords:
-                # 提取 bbox 坐标，处理包含 ";" 的部分
-                bbox_part = coords.split('bbox ')[1].split(';')[0]  # 先提取 bbox 后面的坐标部分，直到遇到 ';'
-                bbox_coords = bbox_part.split(' ')[:4]  # 再从中提取前四个坐标
-                
-                x0, y0, x1, y1 = [int(i) for i in bbox_coords]  # 转换为整数
-
-                # 保存文本和坐标
+            if coords and 'bbox' in coords:
+                # 提取 bbox 坐标部分，如 "bbox 124 18 142 31; ..."
+                bbox_part = coords.split('bbox ')[1].split(';')[0]
+                bbox_coords = bbox_part.split()[:4]
+                x0, y0, x1, y1 = [int(i) for i in bbox_coords]
                 text_positions.append((text, x0, y0, x1, y1))
     except Exception as e:
         print(f"Error parsing hOCR file: {e}")
 
-    return text_positions
+    return text_positions, page_height
+
+def convert_to_dxf_coords(x0, y0, x1, y1, page_height):
+    """
+    根据页面高度，将 HOCR 中的 bbox 坐标转换为 DXF 坐标系。
+    
+    计算：
+      - 中心坐标：center_x, center_y
+      - 文字高度：height = y1 - y0（这里单位仍为像素，后续可能需要换算为工程单位）
+    
+    对 Y 坐标转换公式： center_y = page_height - ((y0 + y1) / 2)
+    """
+    center_x = (x0 + x1) / 2
+    center_y_image = (y0 + y1) / 2
+    center_y = page_height - center_y_image  # 翻转 Y 轴
+    height = y1 - y0
+    return center_x, center_y, height
 
 def convert_to_multipolygon(polygons):
     """
@@ -325,34 +378,43 @@ def remove_paths_in_text_area(svg_file, text_positions):
             if path_bbox_overlaps(path_bbox, text_bbox):
                 root.remove(path)  # 删除重叠的路径
 
-    tree.write('output_no_text_paths.svg')  # 保存修改后的 SVG
-    
-def pdf_to_images(pdf_path, output_dir=None):
-    # 获取 PDF 文件的绝对路径
+    tree.write('output_no_text_paths.svg')  # 保存修改后的 SVG 
+ 
+def process_page(page, page_num, output_dir, dpi=150):
+    """ 处理单个 PDF 页面并保存为 PNG """
+    try:
+        pix = page.get_pixmap(dpi=dpi)
+        image_path = os.path.join(output_dir, f"output_page_{page_num + 1}.png")
+        pix.save(image_path)
+        with print_lock:
+            print(f"Saved: {image_path}")    
+    except Exception as e:
+        with print_lock:
+            print(f"处理第 {page_num + 1} 页时出错：{e}")
+        
+def pdf_to_images(pdf_path, output_dir=None, dpi=150, max_workers=4):
+    """ 并行转换 PDF 为图像 """
     pdf_Dir = os.path.abspath(pdf_path)
     dir = os.path.dirname(pdf_Dir)
 
-    # 如果没有指定输出文件夹，则默认创建 pdfImages 文件夹
     if output_dir is None:
         output_dir = os.path.join(dir, "pdfImages")
 
-    # 确保输出目录存在
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
 
-    # 使用 pdf2image 将 PDF 转换为图像
     try:
-        # 转换所有页面为图像
-        pages = convert_from_path(pdf_path, dpi=72, fmt='png')
+        doc = fitz.open(pdf_path)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(process_page, doc[page_num], page_num, output_dir, dpi)
+                       for page_num in range(len(doc))]
 
-        # 保存每一页为图像文件
-        for page_num, page in enumerate(pages):
-            image_path = os.path.join(output_dir, f"page_{page_num + 1}.png")
-            page.save(image_path, 'PNG')
-            print(f"保存图像：{image_path}")
+            # 等待所有任务完成
+            for future in futures:
+                future.result()
+
     except Exception as e:
         print(f"转换 PDF 为图像时出错：{e}")
-
+        
 def png_to_svg(input_path, output_folder=None):
     """
     将 PNG 文件或文件夹中的 PNG 转换为 DXF 格式，经过 PBM 格式的中间步骤。
@@ -465,11 +527,11 @@ def process_geometry_for_centerline(simplified_polygon):
         if isinstance(simplified_polygon, MultiPolygon):
             # 如果是 MultiPolygon，修复并确保返回有效的 MultiPolygon
             repaired_geom = repair_multipolygon(simplified_polygon)
-            return Centerline(repaired_geom, 5) 
+            return Centerline(repaired_geom, 3) 
         else:
             # 如果是 Polygon，直接处理
             repaired_geom = repair_single_polygon(simplified_polygon)
-            return Centerline(repaired_geom, 5)
+            return Centerline(repaired_geom, 3)
     except Exception as e:
         print(f"Error calculating centerlines: {e}")
         return 
@@ -556,12 +618,12 @@ def process_single_file(input_path, output_folder):
     # ocr_text_result = get_text(input_path)
     shutil.copy2(output_dxf_path, output_newdxf_path)
     text_positions = parse_hocr_optimized(output_hocrPath + ".hocr")
-    append_to_dxf(output_newdxf_path, [], merged_lines, [])
+    append_to_dxf(output_newdxf_path, [], merged_lines, text_positions)
     end_time = time.time()  
     print(f"append dxf Execution time: {end_time - start_time:.2f} seconds")
     start_time = end_time
 
-    print(f"Voronoi ridges have been added to {output_dxf_path}.")
+    print(f"Voronoi ridges have been added to {output_newdxf_path}.")
             
     # os.remove(output_pbmPath)
     
@@ -583,7 +645,7 @@ def main():
     
     # 根据选择的 action 执行相应的函数
     if args.action == 'pdf2images':
-        pdf_to_images(args.input_path, args.output_path)
+        pdf_to_images(args.input_path, args.output_path, 200, 4)
     elif args.action == 'png2svg':
         png_to_svg(args.input_path, args.output_path)
 
