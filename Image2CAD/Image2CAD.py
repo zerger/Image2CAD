@@ -9,9 +9,11 @@ from bs4 import BeautifulSoup
 import numpy as np
 from scipy.spatial import Voronoi
 from shapely.ops import unary_union
+from shapely.geometry import LineString, box
 from scipy.spatial import Voronoi
 import numpy as np
 import ezdxf
+import pytesseract
 from ezdxf import units
 from ezdxf.enums import TextEntityAlignment
 from Centerline.geometry import Centerline
@@ -20,12 +22,14 @@ from scipy.interpolate import splprep, splev
 from scipy.spatial import KDTree
 from multiprocessing import Pool, cpu_count
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from rtree import index
 import shutil
 import time
 import os
 import re
 import tempfile
 import threading
+import multiprocessing
      
 print_lock = threading.Lock()   
 # 将 PNG 转换为 PBM 格式
@@ -157,12 +161,13 @@ def setup_text_styles(doc):
     style.font = 'simfang.ttf'  # 仿宋字体
     style.width = 0.7  # 长宽比
 
-def add_text(msp, text, position, height, layer='文本'):
+def add_text(msp, text, position, height, rotation=0, layer='文本'):
     text_entity = msp.add_text(
         text,
         dxfattribs={
             'height': height,
-            'color': 5,
+            "rotation": rotation,
+            'color': 2,
             'layer': layer,
             'style': '工程字体',  # 需要提前定义文字样式           
         }
@@ -175,28 +180,116 @@ def add_text(msp, text, position, height, layer='文本'):
     return text_entity
 
 def add_ridges(msp, ridges):
-    # 添加 Voronoi 图的边
+    """
+    批量将 Voronoi 图的边添加到 DXF
+    :param msp: DXF ModelSpace
+    :param ridges: 可为 LineString、MultiLineString、List（包含 LineString 或 点集）
+    """
+    line_segments = []  # 缓存所有线段
+
+    def collect_lines(coords):
+        """收集线段"""
+        for start, end in zip(coords[:-1], coords[1:]):
+            line_segments.append((start, end))
+
+    # 处理各种输入类型
     if isinstance(ridges, LineString):
-        msp.add_line(start=ridges.coords[0], end=ridges.coords[-1], dxfattribs={"color": 1, 'layer': '脊线'})
+        collect_lines(ridges.coords)
+
     elif isinstance(ridges, MultiLineString):
         for line in ridges.geoms:
-            for start, end in zip(line.coords[:-1], line.coords[1:]):
-                msp.add_line(start=start, end=end, dxfattribs={"color": 1, 'layer': '脊线'})
-    elif isinstance(ridges, list):  # 如果 ridges 是一个列表
+            collect_lines(line.coords)
+
+    elif isinstance(ridges, list):
         for child in ridges:
-            if isinstance(child, LineString):  # 如果是 LineString 类型
-                msp.add_line(start=child.coords[0], end=child.coords[-1], dxfattribs={"color": 1, 'layer': '脊线'})
-            elif isinstance(child, MultiLineString):  # 如果是 MultiLineString 类型
+            if isinstance(child, LineString):
+                collect_lines(child.coords)
+            elif isinstance(child, MultiLineString):
                 for line in child.geoms:
-                    for start, end in zip(line.coords[:-1], line.coords[1:]):
-                        msp.add_line(start=start, end=end, dxfattribs={"color": 1, 'layer': '脊线'})
-            else:
-                for contour in ridges:
-                    edge_coords = []
-                    for pt in contour:
-                        edge_coords.append(pt)
-                    if edge_coords:
-                        msp.add_lwpolyline(edge_coords, close=False, dxfattribs={"color": 1, 'layer': '脊线'})
+                    collect_lines(line.coords)
+            elif isinstance(child, list) and len(child) >= 2:
+                # 直接处理点集 (x, y) -> LWPOLYLINE
+                msp.add_lwpolyline(child, close=False, dxfattribs={"color": 9, "layer": "脊线"})
+
+    # 批量添加线段
+    if line_segments:
+        msp.add_lwpolyline(
+            [p for segment in line_segments for p in segment],
+            close=False,
+            dxfattribs={"color": 9, "layer": "脊线"}
+        )
+
+def upgrade_dxf(input_file, output_file, target_version="R2010"):
+    """正确升级 DXF 版本，并迁移数据"""
+    try:
+        # 读取旧 DXF 文件
+        old_doc = ezdxf.readfile(input_file)
+        old_msp = old_doc.modelspace()
+    except IOError:
+        print(f"无法读取 DXF 文件: {input_file}")
+        return False
+
+    # 创建一个新的 DXF 文档（指定版本）
+    new_doc = ezdxf.new(target_version)
+    new_msp = new_doc.modelspace()
+
+    # 复制所有实体到新 DXF
+    entity_count = 0
+    for entity in old_msp:
+        try:
+            new_msp.add_entity(entity.copy())  # 复制实体
+            entity_count += 1
+        except Exception as e:
+            print(f"跳过无法复制的实体: {e}")
+
+    # 保存到新文件
+    new_doc.saveas(output_file)
+    print(f"DXF 版本已升级到 {target_version}，共复制 {entity_count} 个实体，保存至 {output_file}")
+    return True
+
+def is_line_intersect_bbox(x1, y1, x2, y2, bbox):
+    """判断线段 (x1, y1, x2, y2) 是否与 bbox 相交"""
+    line = LineString([(x1, y1), (x2, y2)])
+    text_bbox = box(*bbox)  # 创建矩形
+    return line.intersects(text_bbox)  # 是否有交集
+
+def filter_text_by_textbbox(merged_lines, text_data):
+    """使用 R-tree 加速过滤文本包围盒范围内的中心线"""
+    text_index = index.Index()
+    text_bboxes = {}
+
+    words, page_height = text_data   
+    # 添加文本（优先使用行级文本）
+    for i, (text, x, y, width, height) in enumerate(words):
+        bbox = (x, y, x + width, y + height)      
+        
+        text_index.insert(i, bbox)  # 只插入行级包围盒
+        text_bboxes[i] = bbox
+
+    # 过滤被文本覆盖的中心线
+    filtered_centerlines = []
+    for line in merged_lines:
+        if len(line) == 4:
+            x1, y1, x2, y2 = line
+        elif len(line) == 2:
+            (x1, y1), (x2, y2) = line
+        else:
+            raise ValueError(f"无效的线段格式: {line}")
+
+        # 查询 R-tree，找出可能覆盖该中心线的文本包围盒
+        possible_texts = list(text_index.intersection((min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))))
+
+        covered = False
+        for i in possible_texts:
+            bbox = text_bboxes[i]
+            if is_line_intersect_bbox(x1, y1, x2, y2, bbox):  # 改进判定逻辑
+                covered = True
+                break
+        if not covered:
+            filtered_centerlines.append((x1, y1, x2, y2))
+            
+    return filtered_centerlines
+
     
 def append_to_dxf(dxf_file, ridges, merged_lines, text_result):
     """
@@ -217,9 +310,9 @@ def append_to_dxf(dxf_file, ridges, merged_lines, text_result):
     
     # 创建标准图层配置
     layers = {
-        '脊线': {'color': 1, 'linetype': 'CONTINUOUS', 'lineweight': 0.15},        
-        '中心线': {'color': 2, 'linetype': 'CENTER', 'lineweight': 0.30},
-        '文本': {'color': 5, 'linetype': 'HIDDEN', 'lineweight': 0.15}
+        '脊线': {'color': 9, 'linetype': 'CONTINUOUS', 'lineweight': 0.15},        
+        '中心线': {'color': 3, 'linetype': 'CENTER', 'lineweight': 0.30},
+        '文本': {'color': 2, 'linetype': 'HIDDEN', 'lineweight': 0.15}
     }
     
     # 初始化图层
@@ -232,25 +325,30 @@ def append_to_dxf(dxf_file, ridges, merged_lines, text_result):
     setup_text_styles(doc)
     
     add_ridges(msp, ridges)
-
-    # 添加合并后的线段
+    
+    # 批量添加中心线，减少 API 调用
+    centerlines = []
     for line in merged_lines:
-        if len(line) == 4:  # 如果 line 是 (x1, y1, x2, y2) 格式
+        if len(line) == 4:  # (x1, y1, x2, y2)
             x1, y1, x2, y2 = line
-        elif len(line) == 2:  # 如果 line 是 ((x1, y1), (x2, y2)) 格式
+        elif len(line) == 2:  # ((x1, y1), (x2, y2))
             (x1, y1), (x2, y2) = line
         else:
             raise ValueError(f"无效的线段格式: {line}")
-        msp.add_line(start=(x1, y1), end=(x2, y2), dxfattribs={"color": 2, 'layer': '中心线'})
-
+        msp.add_line(start=(x1, y1), end=(x2, y2), dxfattribs={"color": 3, 'layer': '中心线'})
+   
+    # 批量添加文本    
+    # for text, x, y, width, height, rotation in text_data:
+    #     if height > 0:            
+    #         add_text(msp, text, (x, y), width, height, rotation, layer='文本')     
     words, page_height = text_result
     if page_height is not None:
-        # 添加文本
-        for text, x0, y0, x1, y1 in words:
-            center_x, center_y, height = convert_to_dxf_coords(x0, y0, x1, y1, page_height)
-            if height <= 0:
-                continue
-            add_text(msp, text, (center_x, center_y), height, layer='文本')           
+        seen_lines = set()  # 用于去重
+
+    for text, x, y, width, height in words:  
+        if height <= 0:
+            continue      
+        add_text(msp, text, (x, y), height, 0, layer='文本')  
 
     # 保存修改后的 DXF 文件
     doc.saveas(dxf_file)  
@@ -274,21 +372,34 @@ def convert_pbm_to_dxf(pbm_path, dxf_path):
     
     # 执行 Potrace 命令
     try:
-        subprocess.run(params, check=True)
-        print(f"Potrace execution successfully generated")
+        subprocess.run(params, check=True)       
     except subprocess.CalledProcessError as e:
         print(f"Error during Potrace execution: {e}")
     except FileNotFoundError:
         print("Potrace executable not found. Please check the path.")
+
+def preprocess_image(image_path):
+    # 读取灰度图
+    image = cv2.imread(image_path)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
+    # OTSU 二值化
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # 形态学操作去除线条（适用于去除引线标注）
+    kernel = np.ones((1, 5), np.uint8)  # 细长核更适用于引线
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+
+    return binary
+
 def get_text_hocr(input_path, output_path):
     cmd = [
         'E:/Program Files/Tesseract-OCR/tesseract.exe',
         input_path,
         output_path,
-        '-c', 'tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',
-        '--psm', '11',  # 改为PSM 11（稀疏文本自动方向）
-        '-c', 'textord_orientation_fix=1',  # 启用方向修正
+        '-c', 'tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ,.+-±:/°"⌀ ',
+        '-l', 'chi_sim+chi_tra',  # 语言设置：简体中文 + 繁体中文
+        '--psm', '11',  # 改为PSM 11（稀疏文本自动方向）       
         '-c', 'tessedit_create_hocr=1',
         '-c', 'preserve_interword_spaces=1',  # 保持方向校正后的空格
         '--oem', '1'  # 使用LSTM引擎
@@ -307,64 +418,135 @@ def get_text_hocr(input_path, output_path):
     
     return result
     
-# 解析 hocr 文件，提取文本块的位置
-def parse_hocr_optimized(hocr_file):
-    """
-    解析 hOCR 文件，提取每个单词的文本和 bbox 坐标，
-    同时从 ocr_page 元素中提取页面高度（依据 bbox）和 DPI 信息（可扩展）。
+def get_text_with_rotation(input_path, conf_threshold=50):
+    # 设置 Tesseract-OCR 路径
+    pytesseract.pytesseract.tesseract_cmd = r"E:/Program Files/Tesseract-OCR/tesseract.exe"
+
+    # 读取图像
+    image = cv2.imread(input_path)
+    H, W = image.shape[:2]  # 原始图像尺寸
     
-    返回：
-      text_positions: 每个元素为 (text, x0, y0, x1, y1)
-      page_height: 页面高度（像素），用于坐标转换
+    # 配置 Tesseract 参数
+    config = (
+        '-c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ(),.+-±:/°"⌀ '
+        '--psm 11 '  # 改为PSM 11（稀疏文本自动方向）       
+        '-c preserve_interword_spaces=1 '  # 保持空格
+        '--oem 1'  # 使用 LSTM OCR 引擎
+    )
+
+    def process_image(img, rotation):
+        ocr_data = pytesseract.image_to_data(img, config=config, output_type=pytesseract.Output.DICT)
+        transformed_data = []
+        for i in range(len(ocr_data["text"])):
+            text = ocr_data["text"][i].strip()
+            conf = int(ocr_data["conf"][i])  # 置信度
+            if text and conf >= conf_threshold:  # 过滤低置信度文本
+                x, y = ocr_data["left"][i], ocr_data["top"][i]
+                width, height = ocr_data["width"][i], ocr_data["height"][i]
+
+                # 坐标转换到原始图像坐标系
+                if rotation == 0:
+                    x_new, y_new = x, H - (y + height)  # Y 轴翻转
+                elif rotation == 90:
+                    x_new, y_new = y, x  # 旋转 90°（X 对应 Y，Y 对应 X）
+                elif rotation == 270:
+                    x_new, y_new = W - (y + height), x  # 修正旋转 270° 坐标
+                else:
+                    continue
+                
+                transformed_data.append((text, x_new, y_new, width, height, rotation))
+        return transformed_data
+
+    data_0 = process_image(image, 0)
+    # data_90 = process_image(cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE), 90)
+    # data_270 = process_image(cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE), 270)
+
+    # 返回 OCR 数据，包含旋转角度信息
+    return data_0
+
+def adjust_hocr_coordinates(hocr_data, original_shape, rotated_shape, angle):
     """
-    with open(hocr_file, 'r', encoding='utf-8') as file:
-        hocr_content = file.read()
+    调整 HOCR 数据中的 bbox 坐标，使其适应旋转后的图像
+    """
+    height, width = original_shape[:2]
+    rotated_height, rotated_width = rotated_shape[:2]
 
+    def transform_bbox(match):
+        x1, y1, x2, y2 = map(int, match.groups())
+
+        if angle == 90:
+            # 旋转 90°: (x, y) → (height - y2, x)
+            new_x1, new_y1 = height - y2, x1
+            new_x2, new_y2 = height - y1, x2
+        elif angle == 270:
+            # 旋转 270°: (x, y) → (y1, width - x2)
+            new_x1, new_y1 = y1, width - x2
+            new_x2, new_y2 = y2, width - x1
+        else:
+            return match.group(0)  # 不处理其他角度
+
+        return f'bbox {new_x1} {new_y1} {new_x2} {new_y2}'
+
+    # 使用正则表达式匹配 bbox，并调整坐标
+    hocr_data_str = hocr_data.decode("utf-8")
+    hocr_data_adjusted = re.sub(r'bbox (\d+) (\d+) (\d+) (\d+)', transform_bbox, hocr_data_str)
+    
+    return hocr_data_adjusted.encode("utf-8")  # 转回二进制   
+
+
+def parse_hocr_optimized(hocr_file, min_confidence=70):
+    """
+    解析 hOCR 文件，仅提取 ocr_line 级别的文本
+    :param hocr_file: hOCR 文件路径
+    :param min_confidence: 最小置信度阈值
+    :return: [(文本, x, y, width, height)]
+    """
     text_positions = []
-    page_height = None  # 页面高度：将从 ocr_page 的 bbox 中提取
-    try:
-        soup = BeautifulSoup(hocr_content, 'html.parser')
-        
-        # 从 ocr_page 标签中解析页面 bbox 信息
-        ocr_page = soup.find('div', class_='ocr_page')
-        if ocr_page:
-            page_title = ocr_page.get('title', '')
-            # 例如: 'image "D:/..."; bbox 0 0 377 262; ppageno 0; scan_res 96 96'
-            m_bbox = re.search(r'bbox\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)', page_title)
-            if m_bbox:
-                page_x0, page_y0, page_x1, page_y1 = map(int, m_bbox.groups())
-                page_height = page_y1 - page_y0  # 例如 262 - 0 = 262
+    page_height = None
 
-        # 遍历所有包含文本的 ocrx_word 标签
-        for word_element in soup.find_all('span', class_='ocrx_word'):
-            coords = word_element.get('title', '')
-            text = word_element.text.strip() if word_element.text else ''
-            if coords and 'bbox' in coords:
-                # 提取 bbox 坐标部分，如 "bbox 124 18 142 31; ..."
-                bbox_part = coords.split('bbox ')[1].split(';')[0]
-                bbox_coords = bbox_part.split()[:4]
-                x0, y0, x1, y1 = [int(i) for i in bbox_coords]
-                text_positions.append((text, x0, y0, x1, y1))
-    except Exception as e:
-        print(f"Error parsing hOCR file: {e}")
+    with open(hocr_file, 'r', encoding='utf-8') as f:
+        soup = BeautifulSoup(f, 'html.parser')
+
+    # 解析页面信息
+    ocr_page = soup.find('div', class_='ocr_page')
+    if ocr_page:
+        page_title = ocr_page.get('title', '')
+        m_bbox = re.search(r'bbox\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)', page_title)
+        if m_bbox:
+            _, _, _, page_height = map(int, m_bbox.groups())
+
+    # 遍历 `ocr_line` 级别的文本（忽略单词）
+    for line in soup.find_all('span', class_='ocr_line'):
+        try:
+            # 提取坐标
+            title = line.get('title', '')
+            bbox_match = re.search(r'bbox (\d+) (\d+) (\d+) (\d+)', title)
+            if not bbox_match:
+                continue
+
+            x0, y0, x1, y1 = map(int, bbox_match.groups())
+            text = " ".join(line.stripped_strings)  # 获取整行文本
+
+            # 计算转换后的坐标（DXF 坐标系调整）
+            x, y, width, height = convert_to_dxf_coords(x0, y0, x1, y1, page_height)
+
+            # 记录文本信息
+            text_positions.append((text, x, y, width, height))
+
+        except Exception as e:
+            print(f"解析行失败：{e}")
 
     return text_positions, page_height
 
+
 def convert_to_dxf_coords(x0, y0, x1, y1, page_height):
     """
-    根据页面高度，将 HOCR 中的 bbox 坐标转换为 DXF 坐标系。
-    
-    计算：
-      - 中心坐标：center_x, center_y
-      - 文字高度：height = y1 - y0（这里单位仍为像素，后续可能需要换算为工程单位）
-    
-    对 Y 坐标转换公式： center_y = page_height - ((y0 + y1) / 2)
-    """
-    center_x = (x0 + x1) / 2
-    center_y_image = (y0 + y1) / 2
-    center_y = page_height - center_y_image  # 翻转 Y 轴
+    根据页面高度，将 HOCR 中的 bbox 坐标转换为 DXF 坐标系。   
+    """   
+    width = x1 - x0
     height = y1 - y0
-    return center_x, center_y, height
+    x_new, y_new = x0, page_height - (y0 + height)      
+    return x_new, y_new, width, height
 
 def convert_to_multipolygon(polygons):
     """
@@ -581,6 +763,7 @@ def process_single_file(input_path, output_folder):
     """
     处理单个 PNG 文件：将其转换为 PBM，再转换为 DXF。
     """
+    os.makedirs(output_folder, exist_ok=True)
     start_time = time.time()
     # 生成 PBM 文件路径
     filename = os.path.basename(input_path)
@@ -612,16 +795,7 @@ def process_single_file(input_path, output_folder):
     end_time = time.time()  
     print(f"extract_polygons_from_dxf Execution time: {end_time - start_time:.2f} seconds")
     start_time = end_time
-
-    # 计算边界框
-    # bounds = calculate_bounds(polygons)
-
-    # 生成 Voronoi 图
-    # ridges = perform_voronoi_analysis(polygons)
-    
-     # 初始化提取器（设置最大间距为 2.5）
-    # extractor = OptimizedRidgeExtractor(polygons, max_distance=10)
-    attributes = {"id": 1, "name": "polygon", "valid": True}
+  
     max_workers = max(1, os.cpu_count() // 2)
     with ThreadPoolExecutor(max_workers) as executor:
         multi_polygon = convert_to_multipolygon(polygons)      
@@ -648,16 +822,20 @@ def process_single_file(input_path, output_folder):
     end_time = time.time()  
     print(f"merge_lines_with_hough Execution time: {end_time - start_time:.2f} seconds")
     start_time = end_time
-
+    
+    # text_data = get_text_with_rotation(input_path)
+    # end_time = time.time()  
+    # print(f"OCR get text Execution time: {end_time - start_time:.2f} seconds")
+    # start_time = end_time     
+    
     # 追加到原始 DXF 并保存
-    newdxf_filename = os.path.splitext(filename)[0] + "_newPy.dxf"
-    output_newdxf_path = os.path.join(output_folder, newdxf_filename)
-    # processed = process_ridges(centerlines.geometry, 0.1, 0.5, 0.1)
-    # processed = merge_with_dbscan(centerlines.geometry)
-    # ocr_text_result = get_text(input_path)
-    shutil.copy2(output_dxf_path, output_newdxf_path)
+    newdxf_filename = os.path.splitext(filename)[0] + "_newPy.dxf"    
+    output_newdxf_path = os.path.join(output_folder, newdxf_filename)           
+    shutil.copy2(output_dxf_path, output_newdxf_path)   
+    
     text_positions = parse_hocr_optimized(output_hocrPath + ".hocr")
-    append_to_dxf(output_newdxf_path, [], merged_lines, text_positions)
+    filtered_lines = filter_text_by_textbbox(merged_lines, text_positions)
+    append_to_dxf(output_newdxf_path, [], filtered_lines, text_positions)
     end_time = time.time()  
     print(f"append dxf Execution time: {end_time - start_time:.2f} seconds")
     start_time = end_time
