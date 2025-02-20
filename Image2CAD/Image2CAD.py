@@ -1,7 +1,6 @@
+# -*- coding: utf-8 -*-
 import os
 import fitz  # PyMuPDF
-from lxml import etree
-import xml.etree.ElementTree as ET
 import argparse
 import subprocess
 import cv2
@@ -11,28 +10,189 @@ from scipy.spatial import Voronoi
 from shapely.ops import unary_union
 from shapely.geometry import LineString, box
 from scipy.spatial import Voronoi
+import xml.etree.ElementTree as ET
 import numpy as np
-import ezdxf
-from ezdxf import units
-from ezdxf.enums import TextEntityAlignment
-from Centerline.geometry import Centerline
+
 from shapely.geometry import Polygon, MultiPolygon, MultiLineString, LineString
 from scipy.interpolate import splprep, splev
 from scipy.spatial import KDTree
 from multiprocessing import Pool, cpu_count
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from rtree import index
+import os
+import time
+import tempfile
+from functools import wraps
+from pathlib import Path
+from typing import Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor
+from func_timeout import func_timeout, FunctionTimedOut
 import shutil
 import time
 import os
 import sys
-import re
 import tempfile
 import threading
 import OCRProcess
-from OCRProcess import OCRConfigManager, config_manager
+from Centerline.geometry import Centerline
+from OCRProcess import OCRProcess, config_manager
+from dxfProcess import dxfProcess
+from Error import ProcessingError, InputError, ResourceError, TimeoutError
+from Util import Util
+from LogManager import LogManager, setup_logging
+
      
 print_lock = threading.Lock()   
+log_mgr = LogManager()
+
+def retry(max_attempts: int = 3, delay: int = 1):
+    """重试装饰器"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(1, max_attempts+1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    if attempt == max_attempts:
+                        log_mgr.log_error(f"操作重试{max_attempts}次后失败")
+                        raise
+                    log_mgr.log_warn(f"重试 {attempt}/{max_attempts}，原因：{str(e)}")
+                    time.sleep(delay * attempt)
+        return wrapper
+    return decorator
+
+def validate_input_file(input_path: str) -> None:
+    """验证输入文件有效性"""
+    path = Path(input_path)
+    if not path.exists():
+        raise InputError(f"输入文件不存在: {input_path}")
+    if not path.is_file():
+        raise InputError(f"输入路径不是文件: {input_path}")
+    if path.suffix.lower() not in ('.png', '.jpg', '.jpeg'):
+        raise InputError(f"不支持的文件格式: {path.suffix}")
+    if path.stat().st_size > 100 * 1024 * 1024:  # 100MB限制
+        raise InputError("文件大小超过100MB限制")
+
+def check_system_resources() -> None:
+    """检查系统资源是否充足"""
+    # 示例：检查磁盘空间
+    free_space, _ = Util.get_disk_space_psutil('/')
+    if free_space < 500 * 1024 * 1024:  # 500MB
+        raise ResourceError("磁盘空间不足（需要至少500MB空闲空间）")
+
+@retry(max_attempts=3, delay=2)
+def convert_pbm_with_retry(pbm_path: str, dxf_path: str) -> None:
+    """带重试的PBM转换"""
+    try:
+        func_timeout(300, convert_pbm_to_dxf, args=(pbm_path, dxf_path))
+    except FunctionTimedOut as e:
+        log_mgr.log_error("DXF转换超时")
+        raise TimeoutError("转换操作超时") from e
+
+def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Optional[str]]:
+    """
+    安全处理单个文件的全流程
+    
+    :param input_path: 输入文件路径
+    :param output_folder: 输出目录
+    :return: (是否成功, 输出文件路径)
+    """
+    fn_start_time = time.time()
+    temp_files = []
+    
+    setup_logging(console=True)
+    try:
+        # === 阶段1：输入验证 ===
+        log_mgr.log_info(f"开始处理文件: {input_path}")
+        validate_input_file(input_path)
+        check_system_resources()
+        
+        # === 阶段2：准备输出 ===
+        os.makedirs(output_folder, exist_ok=True)
+        if not os.access(output_folder, os.W_OK):
+            raise PermissionError(f"输出目录不可写: {output_folder}")
+            
+        base_name = Path(input_path).stem
+        output_dxf = Path(output_folder) / f"{base_name}.dxf"
+        
+        # === 阶段3：创建临时工作区 ===
+        with tempfile.TemporaryDirectory(prefix="img2cad_") as tmp_dir:
+            start_time = time.time()
+            # OCR处理
+            hocr_path = Path(tmp_dir) / f"{base_name}_ocr"
+            log_mgr.log_info("执行OCR处理...")
+            ocr_process = OCRProcess()
+            ocr_process.get_text_hocr(input_path, str(hocr_path))
+            log_mgr.log_processing_time("OCR处理", start_time)
+            start_time = time.time()
+            
+            # 转换PBM
+            pbm_path = Path(tmp_dir) / f"{base_name}.pbm"
+            log_mgr.log_info("转换图像格式...")
+            convert_png_to_pbm(input_path, str(pbm_path))
+            log_mgr.log_processing_time("图像格式转换", start_time)
+            start_time = time.time()
+            
+            # 转换DXF（带重试和超时）
+            log_mgr.log_info("转换DXF格式...")
+            convert_pbm_with_retry(str(pbm_path), str(output_dxf))
+            log_mgr.log_processing_time("DXF转换", start_time)
+            start_time = time.time()
+            
+            # === 阶段4：后处理 ===
+            log_mgr.log_info("提取多边形...")
+            polygons = dxfProcess.extract_polygons_from_dxf(str(output_dxf))
+            log_mgr.log_processing_time("多边形提取", start_time)
+            start_time = time.time()
+            
+            log_mgr.log_info("生成中心线...")
+            with ThreadPoolExecutor() as executor:
+                multi_polygon = convert_to_multipolygon(polygons)
+                simplified = multi_polygon.simplify(tolerance=0.1)
+                centerlines = process_geometry_for_centerline(simplified)
+                merged_lines = merge_lines_with_hough(centerlines.geometry, 0) 
+                log_mgr.log_processing_time("中心线生成", start_time)
+                start_time = time.time()
+                
+             # === 阶段6：ocr整合 ===
+            log_mgr.log_info("获取ocr结果...")
+            text_positions = OCRProcess.parse_hocr_optimized(str(hocr_path) + ".hocr")
+            filtered_lines = filter_text_by_textbbox(merged_lines, text_positions)    
+            log_mgr.log_processing_time("ocr结果获取", start_time)
+            start_time = time.time()
+            
+            # === 阶段6：结果整合 ===
+            log_mgr.log_info("输出结果...")
+            final_output = Path(output_folder) / f"processed_{base_name}.dxf"
+            shutil.copy2(output_dxf, final_output)
+            dxfProcess.append_to_dxf(str(final_output), [], filtered_lines, text_positions)
+            log_mgr.log_processing_time("结果输出", start_time)
+            start_time = time.time()
+            
+            log_mgr.log_info(f"成功处理文件: {input_path}")
+            return True, str(final_output)
+            
+    except InputError as e:
+        log_mgr.log_error(f"输入错误: {e}")
+    except ResourceError as e:
+        log_mgr.log_error(f"系统资源错误: {e}")
+        raise  # 向上传递严重错误
+    except TimeoutError as e:
+        log_mgr.log_error(f"处理超时: {e}")
+    except Exception as e:
+        log_mgr.log_error(f"未处理的异常发生: {e}")
+    finally:
+        # 清理临时资源
+        for f in temp_files:
+            try:
+                os.remove(f)
+            except:
+                pass
+        log_mgr.log_processing_time("处理结束", fn_start_time)
+    
+    return False, None
+
 # 将 PNG 转换为 PBM 格式
 def convert_png_to_pbm(png_path, pbm_path):
     img = cv2.imread(png_path)  
@@ -54,40 +214,6 @@ def convert_png_to_pbm(png_path, pbm_path):
             cv2.drawContours(binary_img, [contour], -1, 0, -1)
     
     cv2.imwrite(pbm_path, binary_img)   
-
-def extract_polygons_from_dxf(file_path):
-    """从 DXF 文件中提取多边形数据"""
-    try:
-        doc = ezdxf.readfile(file_path)
-    except IOError:
-        print(f"无法读取 DXF 文件: {file_path}")
-        return []
-
-    msp = doc.modelspace()
-    entities = list(msp.query("POLYLINE LWPOLYLINE"))
-    polygons = []
-
-    def process_entity(entity):
-        """处理单个实体"""
-        if entity.dxftype() == "LWPOLYLINE":
-            points = list(entity.vertices())
-            if len(points) >= 3:
-                return points
-        elif entity.dxftype() == "POLYLINE":
-            points = [vertex.dxf.location for vertex in entity.vertices]
-            if len(points) >= 3:
-                return points
-        return None
-    max_workers = max(1, os.cpu_count() // 2)
-    # 使用线程池并行处理实体
-    with ThreadPoolExecutor(max_workers) as executor:
-        futures = [executor.submit(process_entity, entity) for entity in entities]
-        for future in futures:
-            result = future.result()
-            if result is not None:
-                polygons.append(result)
-
-    return polygons
 
 # 合并近似的线段
 def merge_lines_with_hough(lines, padding=0):
@@ -157,96 +283,7 @@ def merge_lines_with_hough(lines, padding=0):
 
     return merged_lines  
 
-def setup_text_styles(doc):
-    style = doc.styles.new('工程字体')
-    style.font = 'simfang.ttf'  # 仿宋字体
-    style.width = 0.7  # 长宽比
 
-def add_text(msp, text, position, height, rotation=0, layer='文本'):
-    text_entity = msp.add_text(
-        text,
-        dxfattribs={
-            'height': height,
-            "rotation": rotation,
-            'color': 2,
-            'layer': layer,
-            'style': '工程字体',  # 需要提前定义文字样式           
-        }
-    )
-    # 正确设置对齐基准点
-    text_entity.set_placement(
-        position,  # 基准点位置
-        align=TextEntityAlignment.LEFT 
-    )
-    return text_entity
-
-def add_ridges(msp, ridges):
-    """
-    批量将 Voronoi 图的边添加到 DXF
-    :param msp: DXF ModelSpace
-    :param ridges: 可为 LineString、MultiLineString、List（包含 LineString 或 点集）
-    """
-    line_segments = []  # 缓存所有线段
-
-    def collect_lines(coords):
-        """收集线段"""
-        for start, end in zip(coords[:-1], coords[1:]):
-            line_segments.append((start, end))
-
-    # 处理各种输入类型
-    if isinstance(ridges, LineString):
-        collect_lines(ridges.coords)
-
-    elif isinstance(ridges, MultiLineString):
-        for line in ridges.geoms:
-            collect_lines(line.coords)
-
-    elif isinstance(ridges, list):
-        for child in ridges:
-            if isinstance(child, LineString):
-                collect_lines(child.coords)
-            elif isinstance(child, MultiLineString):
-                for line in child.geoms:
-                    collect_lines(line.coords)
-            elif isinstance(child, list) and len(child) >= 2:
-                # 直接处理点集 (x, y) -> LWPOLYLINE
-                msp.add_lwpolyline(child, close=False, dxfattribs={"color": 9, "layer": "脊线"})
-
-    # 批量添加线段
-    if line_segments:
-        msp.add_lwpolyline(
-            [p for segment in line_segments for p in segment],
-            close=False,
-            dxfattribs={"color": 9, "layer": "脊线"}
-        )
-
-def upgrade_dxf(input_file, output_file, target_version="R2010"):
-    """正确升级 DXF 版本，并迁移数据"""
-    try:
-        # 读取旧 DXF 文件
-        old_doc = ezdxf.readfile(input_file)
-        old_msp = old_doc.modelspace()
-    except IOError:
-        print(f"无法读取 DXF 文件: {input_file}")
-        return False
-
-    # 创建一个新的 DXF 文档（指定版本）
-    new_doc = ezdxf.new(target_version)
-    new_msp = new_doc.modelspace()
-
-    # 复制所有实体到新 DXF
-    entity_count = 0
-    for entity in old_msp:
-        try:
-            new_msp.add_entity(entity.copy())  # 复制实体
-            entity_count += 1
-        except Exception as e:
-            print(f"跳过无法复制的实体: {e}")
-
-    # 保存到新文件
-    new_doc.saveas(output_file)
-    print(f"DXF 版本已升级到 {target_version}，共复制 {entity_count} 个实体，保存至 {output_file}")
-    return True
 
 def is_line_intersect_bbox(x1, y1, x2, y2, bbox):
     """判断线段 (x1, y1, x2, y2) 是否与 bbox 相交"""
@@ -289,70 +326,8 @@ def filter_text_by_textbbox(merged_lines, text_data):
         if not covered:
             filtered_centerlines.append((x1, y1, x2, y2))
             
-    return filtered_centerlines
+    return filtered_centerlines    
 
-    
-def append_to_dxf(dxf_file, ridges, merged_lines, text_result):
-    """
-    将 Voronoi 图的边和文本追加到现有的 DXF 文件中
-    :param dxf_file: 现有的 DXF 文件路径
-    :param ridges: Voronoi ridges 列表（LineString 格式）
-    :param merged_lines: 合并后的线段列表，格式为 [(x1, y1, x2, y2), ...] 或 [((x1, y1), (x2, y2)), ...]
-    :param text_result: 文本结果列表，格式为 [(text, x0, y0, x1, y1), ...]
-    """
-    try:
-        # 读取现有的 DXF 文件
-        doc = ezdxf.readfile(dxf_file)
-    except IOError:
-        print(f"无法读取 DXF 文件: {dxf_file}")
-        return
-
-    msp = doc.modelspace()
-    
-    # 创建标准图层配置
-    layers = {
-        '脊线': {'color': 9, 'linetype': 'CONTINUOUS', 'lineweight': 0.15},        
-        '中心线': {'color': 3, 'linetype': 'CENTER', 'lineweight': 0.30},
-        '文本': {'color': 2, 'linetype': 'HIDDEN', 'lineweight': 0.15}
-    }
-    
-    # 初始化图层
-    for layer_name, props in layers.items():
-        doc.layers.add(name=layer_name)
-        layer = doc.layers.get(layer_name)
-        layer.color = props['color']
-        layer.linetype = props['linetype']
-        layer.lineweight = props['lineweight']
-    setup_text_styles(doc)
-    
-    add_ridges(msp, ridges)
-    
-    # 批量添加中心线，减少 API 调用
-    centerlines = []
-    for line in merged_lines:
-        if len(line) == 4:  # (x1, y1, x2, y2)
-            x1, y1, x2, y2 = line
-        elif len(line) == 2:  # ((x1, y1), (x2, y2))
-            (x1, y1), (x2, y2) = line
-        else:
-            raise ValueError(f"无效的线段格式: {line}")
-        msp.add_line(start=(x1, y1), end=(x2, y2), dxfattribs={"color": 3, 'layer': '中心线'})
-   
-    # 批量添加文本    
-    # for text, x, y, width, height, rotation in text_data:
-    #     if height > 0:            
-    #         add_text(msp, text, (x, y), width, height, rotation, layer='文本')     
-    words, page_height = text_result
-    if page_height is not None:
-        seen_lines = set()  # 用于去重
-
-    for text, x, y, width, height in words:  
-        if height <= 0:
-            continue      
-        add_text(msp, text, (x, y), height, 0, layer='文本')  
-
-    # 保存修改后的 DXF 文件
-    doc.saveas(dxf_file)  
         
 # 使用 Potrace 转换 PBM 为 dxf
 def convert_pbm_to_dxf(pbm_path, dxf_path):   
@@ -481,7 +456,7 @@ def pdf_to_images(pdf_path, output_dir=None, dpi=150, max_workers=4):
     except Exception as e:
         print(f"转换 PDF 为图像时出错：{e}")
         
-def png_to_svg(input_path, output_folder=None):
+def png_to_dxf(input_path, output_folder=None):
     """
     将 PNG 文件或文件夹中的 PNG 转换为 DXF 格式，经过 PBM 格式的中间步骤。
     如果输入是文件夹，则遍历其中的 PNG 文件处理；
@@ -600,114 +575,22 @@ def process_geometry_for_centerline(simplified_polygon):
             return Centerline(repaired_geom, 3)
     except Exception as e:
         print(f"Error calculating centerlines: {e}")
-        return 
-
-
-       
-def process_single_file(input_path, output_folder):
-    """
-    处理单个 PNG 文件：将其转换为 PBM，再转换为 DXF。
-    """
-    os.makedirs(output_folder, exist_ok=True)
-    start_time = time.time()
-    # 生成 PBM 文件路径
-    filename = os.path.basename(input_path)
-    pbm_filename = os.path.splitext(filename)[0] + ".pbm"
-    output_pbm_path = os.path.join(output_folder, pbm_filename)  
-    
-    hocr_filename = os.path.splitext(filename)[0] 
-    output_hocrPath = os.path.join(output_folder, hocr_filename)          
-    OCRProcess.get_text_hocr(input_path, output_hocrPath)
-    end_time = time.time()  
-    print(f"get_text_hocr Execution time: {end_time - start_time:.2f} seconds")
-    start_time = end_time
-    # 调用函数将 PNG 转换为 PBM
-    convert_png_to_pbm(input_path, output_pbm_path)
-    end_time = time.time()  
-    print(f"convert_png_to_pbm Execution time: {end_time - start_time:.2f} seconds")
-    start_time = end_time
-    
-    # 生成 DXF 文件路径
-    dxf_filename = os.path.splitext(filename)[0] + ".dxf"
-    output_dxf_path = os.path.join(output_folder, dxf_filename)
-    convert_pbm_to_dxf(output_pbm_path, output_dxf_path)
-    end_time = time.time()  
-    print(f"convert_pbm_to_dxf Execution time: {end_time - start_time:.2f} seconds")
-    start_time = end_time
-    
-    # 提取多边形
-    polygons = extract_polygons_from_dxf(output_dxf_path)
-    end_time = time.time()  
-    print(f"extract_polygons_from_dxf Execution time: {end_time - start_time:.2f} seconds")
-    start_time = end_time
-  
-    max_workers = max(1, os.cpu_count() // 2)
-    with ThreadPoolExecutor(max_workers) as executor:
-        multi_polygon = convert_to_multipolygon(polygons)      
-         # 简化 multi_polygon
-        simplified_polygon = multi_polygon.simplify(tolerance=0.1, preserve_topology=True)  
-    end_time = time.time()  
-    print(f"convert_to_multipolygon Execution time: {end_time - start_time:.2f} seconds")
-    start_time = end_time
-    try:
-        centerlines = process_geometry_for_centerline(simplified_polygon)
-        if not centerlines:
-            print(f"Error calculating centerlines: is Empty")
-            return 
-    except Exception as e:
-        print(f"Error calculating centerlines: {e}")
-        return
-    end_time = time.time()  
-    print(f"Centerline Execution time: {end_time - start_time:.2f} seconds")
-    start_time = end_time
-    # longest_paths = process_multilinestring(centerlines.geometry)
-   
-    # centerlines = get_centerline(multi_polygon)       
-    merged_lines = merge_lines_with_hough(centerlines.geometry, 0) 
-    end_time = time.time()  
-    print(f"merge_lines_with_hough Execution time: {end_time - start_time:.2f} seconds")
-    start_time = end_time
-    
-    # text_data = get_text_with_rotation(input_path)
-    # end_time = time.time()  
-    # print(f"OCR get text Execution time: {end_time - start_time:.2f} seconds")
-    # start_time = end_time     
-    
-    # 追加到原始 DXF 并保存
-    newdxf_filename = "newPy_" + os.path.splitext(filename)[0] + ".dxf"    
-    output_newdxf_path = os.path.join(output_folder, newdxf_filename)           
-    shutil.copy2(output_dxf_path, output_newdxf_path)   
-    
-    text_positions = OCRProcess.parse_hocr_optimized(output_hocrPath + ".hocr")
-    filtered_lines = filter_text_by_textbbox(merged_lines, text_positions)
-    append_to_dxf(output_newdxf_path, [], filtered_lines, text_positions)
-    end_time = time.time()  
-    print(f"append dxf Execution time: {end_time - start_time:.2f} seconds")
-    start_time = end_time
-
-    print(f"Voronoi ridges have been added to {output_newdxf_path}.")
-            
-    # os.remove(output_pbmPath)
-    
-    # text_positions = parse_hocr_optimized(output_hocrPath + ".hocr")
-    # svgText_fileName = os.path.splitext(filename)[0] + "_text.svg"
-    # output_svgTextPath = os.path.join(output_folder, svgText_fileName) 
-    # insert_text_into_svg(output_svgPath, text_positions, output_svgTextPath)    
-
+        return    
 
 def main():    
     # 设置命令行参数解析器
     parser = argparse.ArgumentParser(description="Process PDF and PNG files.")
-    parser.add_argument('action', choices=['pdf2images', 'png2svg', 'set-tesseract'],
-                        help="Action: 'pdf2images', 'png2svg' or 'set-tesseract'")
+    parser.add_argument('action', choices=['pdf2images', 'png2dxf', 'set-tesseract'],
+                        help="Action: 'pdf2images', 'png2dxf' or 'set-tesseract'")
     parser.add_argument('input_path', nargs='?', 
                         help="Input path (file/folder) or tesseract path for set-tesseract")
     parser.add_argument('output_path', nargs='?',
-                        help="Output path (auto-generated if omitted)")
-    
+                        help="Output path (auto-generated if omitted)")    
     # 添加可选参数
     parser.add_argument('--tesseract', '-t',
                         help="Specify Tesseract path (overrides config)")
+    parser.add_argument('--log-file', help='指定日志文件路径')
+    parser.add_argument('--no-console', action='store_true', help='禁用控制台输出')
     
     try:
         args = parser.parse_args()
@@ -719,7 +602,7 @@ def main():
     # 根据选择的 action 执行相应的函数
     if args.action == 'pdf2images':
         pdf_to_images(args.input_path, args.output_path, 200, 4)
-    elif args.action == 'png2svg':
+    elif args.action == 'png2dxf':
         # 优先使用命令行参数
         tesseract_path = args.tesseract or config_manager.get_tesseract_path()
         try:
@@ -727,7 +610,7 @@ def main():
         except FileNotFoundError as e:
             print(f"Tesseract路径无效: {e}")
             return
-        png_to_svg(args.input_path, args.output_path)
+        png_to_dxf(args.input_path, args.output_path)
     elif args.action == 'set-tesseract':
         if not args.input_path:
             print("Error: Missing Tesseract path")
