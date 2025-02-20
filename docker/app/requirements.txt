@@ -5,3 +5,11 @@ redis
 opencv-python
 pillow
 requests
+fitz
+lxml
+bs4
+numpy
+scipy
+shapely
+ezdxf
+rtree
