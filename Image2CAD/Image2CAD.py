@@ -13,7 +13,6 @@ from shapely.geometry import LineString, box
 from scipy.spatial import Voronoi
 import numpy as np
 import ezdxf
-import pytesseract
 from ezdxf import units
 from ezdxf.enums import TextEntityAlignment
 from Centerline.geometry import Centerline
@@ -26,10 +25,12 @@ from rtree import index
 import shutil
 import time
 import os
+import sys
 import re
 import tempfile
 import threading
-import multiprocessing
+import OCRProcess
+from OCRProcess import OCRConfigManager, config_manager
      
 print_lock = threading.Lock()   
 # 将 PNG 转换为 PBM 格式
@@ -392,163 +393,6 @@ def preprocess_image(image_path):
 
     return binary
 
-def get_text_hocr(input_path, output_path):
-    cmd = [
-        'E:/Program Files/Tesseract-OCR/tesseract.exe',
-        input_path,
-        output_path,
-        '-c', 'tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ(),.+-±:/°"⌀ ',
-        '-l', 'chi_sim+chi_tra',  # 语言设置：简体中文 + 繁体中文
-        '--psm', '11',  # 改为PSM 11（稀疏文本自动方向）       
-        '-c', 'tessedit_create_hocr=1',
-        '-c', 'preserve_interword_spaces=1',  # 保持方向校正后的空格
-        '--tessdata-dir', 'E:/Program Files/Tesseract-OCR/tessdata/',
-        '--oem', '1'  # 使用LSTM引擎
-    ]    
-    
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        check=True
-    )
-    
-    # 检查输出日志中的方向信息
-    if 'Orientation:' in result.stderr:
-        print("检测到文本方向调整")
-    
-    return result
-    
-def get_text_with_rotation(input_path, conf_threshold=50):
-    # 设置 Tesseract-OCR 路径
-    pytesseract.pytesseract.tesseract_cmd = r"E:/Program Files/Tesseract-OCR/tesseract.exe"
-
-    # 读取图像
-    image = cv2.imread(input_path)
-    H, W = image.shape[:2]  # 原始图像尺寸
-    
-    # 配置 Tesseract 参数
-    config = (
-        '-c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ(),.+-±:/°"⌀ '
-        '--psm 11 '  # 改为PSM 11（稀疏文本自动方向）       
-        '-c preserve_interword_spaces=1 '  # 保持空格
-        '--oem 1'  # 使用 LSTM OCR 引擎
-    )
-
-    def process_image(img, rotation):
-        ocr_data = pytesseract.image_to_data(img, config=config, output_type=pytesseract.Output.DICT)
-        transformed_data = []
-        for i in range(len(ocr_data["text"])):
-            text = ocr_data["text"][i].strip()
-            conf = int(ocr_data["conf"][i])  # 置信度
-            if text and conf >= conf_threshold:  # 过滤低置信度文本
-                x, y = ocr_data["left"][i], ocr_data["top"][i]
-                width, height = ocr_data["width"][i], ocr_data["height"][i]
-
-                # 坐标转换到原始图像坐标系
-                if rotation == 0:
-                    x_new, y_new = x, H - (y + height)  # Y 轴翻转
-                elif rotation == 90:
-                    x_new, y_new = y, x  # 旋转 90°（X 对应 Y，Y 对应 X）
-                elif rotation == 270:
-                    x_new, y_new = W - (y + height), x  # 修正旋转 270° 坐标
-                else:
-                    continue
-                
-                transformed_data.append((text, x_new, y_new, width, height, rotation))
-        return transformed_data
-
-    data_0 = process_image(image, 0)
-    # data_90 = process_image(cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE), 90)
-    # data_270 = process_image(cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE), 270)
-
-    # 返回 OCR 数据，包含旋转角度信息
-    return data_0
-
-def adjust_hocr_coordinates(hocr_data, original_shape, rotated_shape, angle):
-    """
-    调整 HOCR 数据中的 bbox 坐标，使其适应旋转后的图像
-    """
-    height, width = original_shape[:2]
-    rotated_height, rotated_width = rotated_shape[:2]
-
-    def transform_bbox(match):
-        x1, y1, x2, y2 = map(int, match.groups())
-
-        if angle == 90:
-            # 旋转 90°: (x, y) → (height - y2, x)
-            new_x1, new_y1 = height - y2, x1
-            new_x2, new_y2 = height - y1, x2
-        elif angle == 270:
-            # 旋转 270°: (x, y) → (y1, width - x2)
-            new_x1, new_y1 = y1, width - x2
-            new_x2, new_y2 = y2, width - x1
-        else:
-            return match.group(0)  # 不处理其他角度
-
-        return f'bbox {new_x1} {new_y1} {new_x2} {new_y2}'
-
-    # 使用正则表达式匹配 bbox，并调整坐标
-    hocr_data_str = hocr_data.decode("utf-8")
-    hocr_data_adjusted = re.sub(r'bbox (\d+) (\d+) (\d+) (\d+)', transform_bbox, hocr_data_str)
-    
-    return hocr_data_adjusted.encode("utf-8")  # 转回二进制   
-
-
-def parse_hocr_optimized(hocr_file, min_confidence=70):
-    """
-    解析 hOCR 文件，仅提取 ocr_line 级别的文本
-    :param hocr_file: hOCR 文件路径
-    :param min_confidence: 最小置信度阈值
-    :return: [(文本, x, y, width, height)]
-    """
-    text_positions = []
-    page_height = None
-
-    with open(hocr_file, 'r', encoding='utf-8') as f:
-        soup = BeautifulSoup(f, 'html.parser')
-
-    # 解析页面信息
-    ocr_page = soup.find('div', class_='ocr_page')
-    if ocr_page:
-        page_title = ocr_page.get('title', '')
-        m_bbox = re.search(r'bbox\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)', page_title)
-        if m_bbox:
-            _, _, _, page_height = map(int, m_bbox.groups())
-
-    # 遍历 `ocr_line` 级别的文本（忽略单词）
-    for line in soup.find_all('span', class_='ocr_line'):
-        try:
-            # 提取坐标
-            title = line.get('title', '')
-            bbox_match = re.search(r'bbox (\d+) (\d+) (\d+) (\d+)', title)
-            if not bbox_match:
-                continue
-
-            x0, y0, x1, y1 = map(int, bbox_match.groups())
-            text = " ".join(line.stripped_strings)  # 获取整行文本
-
-            # 计算转换后的坐标（DXF 坐标系调整）
-            x, y, width, height = convert_to_dxf_coords(x0, y0, x1, y1, page_height)
-
-            # 记录文本信息
-            text_positions.append((text, x, y, width, height))
-
-        except Exception as e:
-            print(f"解析行失败：{e}")
-
-    return text_positions, page_height
-
-
-def convert_to_dxf_coords(x0, y0, x1, y1, page_height):
-    """
-    根据页面高度，将 HOCR 中的 bbox 坐标转换为 DXF 坐标系。   
-    """   
-    width = x1 - x0
-    height = y1 - y0
-    x_new, y_new = x0, page_height - (y0 + height)      
-    return x_new, y_new, width, height
-
 def convert_to_multipolygon(polygons):
     """
     将多边形坐标列表转换为 MultiPolygon。
@@ -773,7 +617,7 @@ def process_single_file(input_path, output_folder):
     
     hocr_filename = os.path.splitext(filename)[0] 
     output_hocrPath = os.path.join(output_folder, hocr_filename)          
-    get_text_hocr(input_path, output_hocrPath)
+    OCRProcess.get_text_hocr(input_path, output_hocrPath)
     end_time = time.time()  
     print(f"get_text_hocr Execution time: {end_time - start_time:.2f} seconds")
     start_time = end_time
@@ -834,7 +678,7 @@ def process_single_file(input_path, output_folder):
     output_newdxf_path = os.path.join(output_folder, newdxf_filename)           
     shutil.copy2(output_dxf_path, output_newdxf_path)   
     
-    text_positions = parse_hocr_optimized(output_hocrPath + ".hocr")
+    text_positions = OCRProcess.parse_hocr_optimized(output_hocrPath + ".hocr")
     filtered_lines = filter_text_by_textbbox(merged_lines, text_positions)
     append_to_dxf(output_newdxf_path, [], filtered_lines, text_positions)
     end_time = time.time()  
@@ -854,18 +698,46 @@ def process_single_file(input_path, output_folder):
 def main():    
     # 设置命令行参数解析器
     parser = argparse.ArgumentParser(description="Process PDF and PNG files.")
-    parser.add_argument('action', choices=['pdf2images', 'png2svg'], help="Choose the action to perform: 'pdf2images' or 'png2svg'")
-    parser.add_argument('input_path', help="Input file or folder path.")
-    parser.add_argument('output_path', nargs='?', help="Output file or folder path. If not provided, it will be auto-generated based on input_path.")
+    parser.add_argument('action', choices=['pdf2images', 'png2svg', 'set-tesseract'],
+                        help="Action: 'pdf2images', 'png2svg' or 'set-tesseract'")
+    parser.add_argument('input_path', nargs='?', 
+                        help="Input path (file/folder) or tesseract path for set-tesseract")
+    parser.add_argument('output_path', nargs='?',
+                        help="Output path (auto-generated if omitted)")
     
-    # 解析命令行参数
-    args = parser.parse_args()
+    # 添加可选参数
+    parser.add_argument('--tesseract', '-t',
+                        help="Specify Tesseract path (overrides config)")
+    
+    try:
+        args = parser.parse_args()
+    except argparse.ArgumentError as e:
+        print(f"参数错误: {e}")
+        parser.print_help()
+        sys.exit(1)
     
     # 根据选择的 action 执行相应的函数
     if args.action == 'pdf2images':
         pdf_to_images(args.input_path, args.output_path, 200, 4)
     elif args.action == 'png2svg':
+        # 优先使用命令行参数
+        tesseract_path = args.tesseract or config_manager.get_tesseract_path()
+        try:
+            config_manager.set_tesseract_path(tesseract_path)
+        except FileNotFoundError as e:
+            print(f"Tesseract路径无效: {e}")
+            return
         png_to_svg(args.input_path, args.output_path)
+    elif args.action == 'set-tesseract':
+        if not args.input_path:
+            print("Error: Missing Tesseract path")
+            return
+        try:
+            config_manager.set_tesseract_path(args.input_path)
+            print(f"Tesseract路径已设置为: {config_manager.get_tesseract_path()}")
+        except Exception as e:
+            print(f"配置失败: {e}")
+        return
 
 if __name__ == "__main__":
     main()

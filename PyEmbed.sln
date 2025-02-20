@@ -1,0 +1,31 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.13.35806.99 d17.13
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "PyEmbed", "PyEmbed\PyEmbed.vcxproj", "{459ADB2F-A519-4C4A-A52A-CB9A93C192A2}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{459ADB2F-A519-4C4A-A52A-CB9A93C192A2}.Debug|x64.ActiveCfg = Debug|x64
+		{459ADB2F-A519-4C4A-A52A-CB9A93C192A2}.Debug|x64.Build.0 = Debug|x64
+		{459ADB2F-A519-4C4A-A52A-CB9A93C192A2}.Debug|x86.ActiveCfg = Debug|Win32
+		{459ADB2F-A519-4C4A-A52A-CB9A93C192A2}.Debug|x86.Build.0 = Debug|Win32
+		{459ADB2F-A519-4C4A-A52A-CB9A93C192A2}.Release|x64.ActiveCfg = Release|x64
+		{459ADB2F-A519-4C4A-A52A-CB9A93C192A2}.Release|x64.Build.0 = Release|x64
+		{459ADB2F-A519-4C4A-A52A-CB9A93C192A2}.Release|x86.ActiveCfg = Release|Win32
+		{459ADB2F-A519-4C4A-A52A-CB9A93C192A2}.Release|x86.Build.0 = Release|Win32
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {B247F2DC-2DDF-4025-A44B-81327F2C33C2}
+	EndGlobalSection
+EndGlobal
