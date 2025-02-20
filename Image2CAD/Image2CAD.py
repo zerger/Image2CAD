@@ -397,13 +397,14 @@ def get_text_hocr(input_path, output_path):
         'E:/Program Files/Tesseract-OCR/tesseract.exe',
         input_path,
         output_path,
-        '-c', 'tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ,.+-±:/°"⌀ ',
+        '-c', 'tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ(),.+-±:/°"⌀ ',
         '-l', 'chi_sim+chi_tra',  # 语言设置：简体中文 + 繁体中文
         '--psm', '11',  # 改为PSM 11（稀疏文本自动方向）       
         '-c', 'tessedit_create_hocr=1',
         '-c', 'preserve_interword_spaces=1',  # 保持方向校正后的空格
+        '--tessdata-dir', 'E:/Program Files/Tesseract-OCR/tessdata/',
         '--oem', '1'  # 使用LSTM引擎
-    ]
+    ]    
     
     result = subprocess.run(
         cmd,
@@ -829,7 +830,7 @@ def process_single_file(input_path, output_folder):
     # start_time = end_time     
     
     # 追加到原始 DXF 并保存
-    newdxf_filename = os.path.splitext(filename)[0] + "_newPy.dxf"    
+    newdxf_filename = "newPy_" + os.path.splitext(filename)[0] + ".dxf"    
     output_newdxf_path = os.path.join(output_folder, newdxf_filename)           
     shutil.copy2(output_dxf_path, output_newdxf_path)   
     
