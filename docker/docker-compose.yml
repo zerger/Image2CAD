@@ -1,0 +1,33 @@
+version: "3.8"
+
+services:
+  # FastAPI 服务器
+  fastapi:
+    build: .
+    container_name: fastapi_server
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+      - worker
+    volumes:
+      - .\app\uploads:/app/uploads
+      - .\app\outputs:/app/outputs
+
+  # Celery 任务队列
+  worker:
+    build: .
+    container_name: celery_worker
+    command: celery -A tasks worker --loglevel=info
+    depends_on:
+      - redis
+    volumes:
+      - .\app\uploads:/app/uploads
+      - .\app\outputs:/app/outputs
+
+  # Redis 任务队列存储
+  redis:
+    image: redis:latest
+    container_name: redis_server
+    ports:
+      - "6379:6379"
