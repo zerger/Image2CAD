@@ -13,3 +13,5 @@ scipy
 shapely
 ezdxf
 rtree
+setuptools
+PyMuPDF
