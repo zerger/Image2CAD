@@ -3,6 +3,8 @@ import os
 import logging
 from ezdxf import units, options
 from ezdxf.enums import TextEntityAlignment
+from matplotlib.font_manager import findfont, FontProperties
+import platform
 from lxml import etree
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -133,23 +135,7 @@ class dxfProcess:
             print(f"无法读取 DXF 文件: {dxf_file}")
             return
 
-        msp = doc.modelspace()
-
-        # 创建标准图层配置
-        layers = {
-            '轮廓': {'color': 7, 'linetype': 'CONTINUOUS', 'lineweight': 0.15},        
-            '脊线': {'color': 9, 'linetype': 'CONTINUOUS', 'lineweight': 0.15},        
-            '中心线': {'color': 3, 'linetype': 'CENTER', 'lineweight': 0.30},
-            '文本': {'color': 2, 'linetype': 'HIDDEN', 'lineweight': 0.15}            
-        }
-
-        # 初始化图层
-        for layer_name, props in layers.items():
-            doc.layers.add(name=layer_name)
-            layer = doc.layers.get(layer_name)
-            layer.color = props['color']
-            layer.linetype = props['linetype']
-            layer.lineweight = props['lineweight']
+        msp = doc.modelspace()        
         cls.setup_text_styles(doc)
 
         cls.add_multipolygon(msp, multi_polygon)
@@ -181,12 +167,97 @@ class dxfProcess:
 
         # 保存修改后的 DXF 文件
         doc.saveas(dxf_file)  
-        
+    
+    @staticmethod
+    def find_font(font_name):
+        """跨平台字体查找函数"""
+        # 先尝试系统字体查找
+        try:
+            path = findfont(FontProperties(fname=font_name))
+            if os.path.exists(path):
+                return path
+        except:
+            pass
+
+        # 自定义字体搜索路径
+        search_paths = []
+        system = platform.system()
+
+        # 不同系统的字体目录
+        if system == "Windows":
+            search_paths.append("C:/Windows/Fonts/")
+        elif system == "Darwin":  # macOS
+            search_paths.extend(["/Library/Fonts/", "/System/Library/Fonts/", os.path.expanduser("~/Library/Fonts/")])
+        else:  # Linux
+            search_paths.extend(["/usr/share/fonts/", "/usr/local/share/fonts/", os.path.expanduser("~/.fonts/")])
+
+        # 递归搜索字体文件
+        for path in search_paths:
+            if not os.path.exists(path):
+                continue
+            for root, dirs, files in os.walk(path):
+                for file in files:
+                    if file.lower() == font_name.lower():
+                        return os.path.join(root, file)
+        return None
+    
     @classmethod
-    def setup_text_styles(cls, doc):
-        style = doc.styles.new('工程字体')
-        style.font = 'simfang.ttf'  # 仿宋字体
-        style.width = 0.7  # 长宽比
+    def setup_layers(cls, doc):
+       # 创建标准图层配置
+        layers = {
+            '轮廓': {'color': 7, 'linetype': 'CONTINUOUS', 'lineweight': 0.15},        
+            '脊线': {'color': 9, 'linetype': 'CONTINUOUS', 'lineweight': 0.15},        
+            '中心线': {'color': 3, 'linetype': 'CENTER', 'lineweight': 0.30},
+            '文本': {'color': 2, 'linetype': 'HIDDEN', 'lineweight': 0.15}            
+        }
+
+        # 初始化图层
+        for layer_name, props in layers.items():
+            if layer_name not in doc.layers:             
+                layer = doc.layers.add(name=layer_name)
+            else:               
+                layer = doc.layers.get(layer_name)       
+            layer.color = props['color']
+            layer.linetype = props['linetype']
+            layer.lineweight = props['lineweight'] 
+            
+    @classmethod
+    def setup_text_styles(cls, doc):        
+        style_name = '工程字体'    
+        # 检查并创建/获取文字样式
+        if style_name in doc.styles:
+            style = doc.styles.get(style_name)           
+        else:
+            style = doc.styles.new(style_name)       
+        # 正确设置字体属性的方式
+        font_mapping = {
+            # (字体文件, 主字体名, 大字体名)
+            'simfang.ttf': ('simfang.shx', 'hztxt.shx'),  # 仿宋体
+            'FangSong.ttf': ('FSA_GB.shx', 'hztxt.shx'),  # 方正仿宋
+            'simhei.ttf': ('simhei.shx', None),           # 黑体
+            'Arial': ('arial.ttf', None)                 # 英文默认
+        }
+        # 查找可用字体
+        for font_file, (shx_font, bigfont) in font_mapping.items():
+            if cls.find_font(font_file):
+                try:
+                    # 正确设置DXF字体属性
+                    style.dxf.font = shx_font
+                    if bigfont:
+                        style.dxf.bigfont = bigfont                    
+                    break
+                except Exception as e:
+                    print(f"字体设置失败: {str(e)}")
+                    continue
+        else:
+            # 回退到默认设置
+            style.dxf.font = 'arial.ttf'
+            style.dxf.bigfont = None
+            print("警告：使用默认字体Arial")
+
+        # 设置其他属性
+        style.width = 0.7
+        style.last_height = 3.0  # 添加默认字高      
 
     @classmethod
     def add_text(cls, msp, text, position, height, rotation=0, layer='文本'):

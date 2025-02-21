@@ -1,6 +1,7 @@
 from pathlib import Path
 import os
 import configparser
+from cryptography.fernet import Fernet
 
 class ConfigManager:
     _instance = None
@@ -12,6 +13,14 @@ class ConfigManager:
             cls._instance = super(ConfigManager, cls).__new__(cls)
             cls._instance._init_config()
         return cls._instance
+    
+    @staticmethod
+    def _encrypt_value(self, value: str) -> str:
+        return self._cipher.encrypt(value.encode()).decode()
+    
+    @staticmethod
+    def _decrypt_value(self, value: str) -> str:
+        return self._cipher.decrypt(value.encode()).decode()
     
     def _init_config(self):
         """初始化配置"""

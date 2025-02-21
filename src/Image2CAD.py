@@ -169,7 +169,7 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         log_mgr.log_info("输出结果...")
         final_output = Path(output_folder) / f"output_{base_name}.dxf"
         # shutil.copy2(output_dxf, final_output)
-        dxfProcess.upgrade_dxf(output_dxf, final_output, "R2010")
+        # dxfProcess.upgrade_dxf(output_dxf, final_output, "R2010")
         dxfProcess.append_to_dxf(str(final_output), simplified, [], filtered_lines, text_positions)
         log_mgr.log_processing_time("结果输出", start_time)
         start_time = time.time()
