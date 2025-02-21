@@ -629,6 +629,20 @@ def process_geometry_for_centerline(simplified_polygon):
         print(f"Error calculating centerlines: {e}")
         return    
 
+def has_valid_files(path, extensions):
+    """递归检查目录或文件是否包含指定扩展名的文件"""
+    path = Path(path)
+    if not path.exists():
+        return False
+        
+    if path.is_file():
+        return path.suffix.lower() in extensions
+        
+    for p in path.rglob('*'):
+        if p.is_file() and p.suffix.lower() in extensions:
+            return True
+    return False
+
 # 辅助函数
 def validate_input_path(args, allowed_ext):
     """验证输入路径有效性"""
@@ -637,8 +651,16 @@ def validate_input_path(args, allowed_ext):
         raise InputError(f"输入路径不存在: {path}")
     if args.action == 'pdf2images' and not path.lower().endswith('.pdf'):
         raise InputError("PDF转换需要.pdf文件")
-    if args.action == 'png2dxf' and not any(path.lower().endswith(ext) for ext in allowed_ext):
-        raise InputError(f"仅支持 {', '.join(allowed_ext)} 格式")
+    if args.action == 'png2dxf':
+        allowed_ext = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff'}
+        input_path = Path(path)
+        if not input_path.exists():
+            raise ValueError(f"输入路径不存在: {path}")        
+        if not has_valid_files(input_path, allowed_ext):
+            raise ValueError(
+                f"路径中未找到支持的图像文件（允许的扩展名：{', '.join(allowed_ext)}）\n"
+                f"输入路径：{input_path}"
+                )
 
 def default_output_path(input_path, suffix):
     """生成默认输出路径"""
