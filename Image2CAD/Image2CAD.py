@@ -149,7 +149,7 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
             log_mgr.log_info("生成中心线...")
             with ThreadPoolExecutor() as executor:
                 multi_polygon = convert_to_multipolygon(polygons)
-                simplified = multi_polygon.simplify(tolerance=0.1)
+                simplified = multi_polygon.simplify(tolerance=1)
                 centerlines = process_geometry_for_centerline(simplified)
                 merged_lines = merge_lines_with_hough(centerlines.geometry, 0) 
                 log_mgr.log_processing_time("中心线生成", start_time)
@@ -166,11 +166,12 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
             log_mgr.log_info("输出结果...")
             final_output = Path(output_folder) / f"processed_{base_name}.dxf"
             shutil.copy2(output_dxf, final_output)
-            dxfProcess.append_to_dxf(str(final_output), [], filtered_lines, text_positions)
+            dxfProcess.append_to_dxf(str(final_output), simplified, [], filtered_lines, text_positions)
             log_mgr.log_processing_time("结果输出", start_time)
             start_time = time.time()
             
             log_mgr.log_info(f"成功处理文件: {input_path}")
+            log_mgr.log_info(f"结果输出文件: {str(final_output)}")
             return True, str(final_output)
             
     except InputError as e:

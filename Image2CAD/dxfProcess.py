@@ -73,7 +73,7 @@ class dxfProcess:
         return True
     
     @classmethod
-    def append_to_dxf(cls, dxf_file, ridges, merged_lines, text_result):
+    def append_to_dxf(cls, dxf_file, multi_polygon, ridges, merged_lines, text_result):
         """
         将 Voronoi 图的边和文本追加到现有的 DXF 文件中
         :param dxf_file: 现有的 DXF 文件路径
@@ -92,9 +92,10 @@ class dxfProcess:
 
         # 创建标准图层配置
         layers = {
+            '轮廓': {'color': 7, 'linetype': 'CONTINUOUS', 'lineweight': 0.15},        
             '脊线': {'color': 9, 'linetype': 'CONTINUOUS', 'lineweight': 0.15},        
             '中心线': {'color': 3, 'linetype': 'CENTER', 'lineweight': 0.30},
-            '文本': {'color': 2, 'linetype': 'HIDDEN', 'lineweight': 0.15}
+            '文本': {'color': 2, 'linetype': 'HIDDEN', 'lineweight': 0.15}            
         }
 
         # 初始化图层
@@ -106,6 +107,7 @@ class dxfProcess:
             layer.lineweight = props['lineweight']
         cls.setup_text_styles(doc)
 
+        cls.add_multipolygon(msp, multi_polygon)
         cls.add_ridges(msp, ridges)
 
         # 批量添加中心线，减少 API 调用
@@ -159,7 +161,17 @@ class dxfProcess:
             align=TextEntityAlignment.LEFT 
         )
         return text_entity
-
+    
+    @classmethod
+    def add_multipolygon(cls, msp, multipolygon):
+       for polygon in multipolygon.geoms:
+        for ring in [polygon.exterior] + list(polygon.interiors):  # 处理外环 + 内环
+            points = list(ring.coords)  # 获取坐标
+            msp.add_lwpolyline(
+                points, 
+                close=True,
+                dxfattribs={"color": 7, "layer": "轮廓"})  # 添加轻量级多段线 
+        
     @classmethod
     def add_ridges(cls, msp, ridges):
         """

@@ -167,7 +167,7 @@ class OCRProcess:
         x_new, y_new = x0, page_height - (y0 + height)      
         return x_new, y_new, width, height
 
-    def parse_hocr_optimized(hocr_file, min_confidence=70):
+    def parse_hocr_optimized(self, hocr_file, min_confidence=70):
         """
         解析 hOCR 文件，仅提取 ocr_line 级别的文本
         :param hocr_file: hOCR 文件路径
@@ -201,7 +201,7 @@ class OCRProcess:
                 text = " ".join(line.stripped_strings)  # 获取整行文本
 
                 # 计算转换后的坐标（DXF 坐标系调整）
-                x, y, width, height = convert_to_dxf_coords(x0, y0, x1, y1, page_height)
+                x, y, width, height = self.convert_to_dxf_coords(x0, y0, x1, y1, page_height)
 
                 # 记录文本信息
                 text_positions.append((text, x, y, width, height))
