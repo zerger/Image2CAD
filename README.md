@@ -1,1 +1,1 @@
-cd pytesseract && pip install -U .
+cd Image2CADPy && pip install -U .
