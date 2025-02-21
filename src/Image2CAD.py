@@ -102,6 +102,7 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
     temp_files = []
     
     setup_logging(console=True)
+    dxfProcess.setup_dxf_logging()
     try:
         # === 阶段1：输入验证 ===
         log_mgr.log_info(f"开始处理文件: {input_path}")
@@ -150,7 +151,7 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         with ThreadPoolExecutor() as executor:
             multi_polygon = convert_to_multipolygon(polygons)
             if multi_polygon:
-                multipolygon_to_txt(multi_polygon, filename=output_folder + "/output.txt")           
+                # multipolygon_to_txt(multi_polygon, filename=output_folder + "/output.txt")           
                 simplified = multi_polygon.simplify(tolerance=1)
                 centerlines = process_geometry_for_centerline(simplified)
                 merged_lines = merge_lines_with_hough(centerlines.geometry, 0) 
@@ -174,7 +175,7 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         start_time = time.time()
         
         log_mgr.log_info(f"成功处理文件: {input_path}")
-        log_mgr.log_info(f"结果输出文件: {str(final_output)}")
+        log_mgr.log_info(f"结果输出文件: {final_output}")
         
         return True, str(final_output)
             
@@ -194,7 +195,7 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
                 os.remove(f)
             except:
                 pass
-        log_mgr.log_processing_time("处理结束", fn_start_time)
+        log_mgr.log_processing_time("结束", fn_start_time)
     
     return False, None
 
@@ -372,12 +373,12 @@ def convert_pbm_to_dxf(pbm_path, dxf_path):
         pbm_path,
         '-b', 'dxf',
         '-o', dxf_path,
-        '-z', 'majority',       # 保持主方向特征
-        '-t', '5',              # 严格保留细节
-        '-a', '0.15',           # 接近直线模式
-        '-O', '0.5',            # 高精度优化    
-        '-u', '10',             # 输出量化单位      
-        '-n',
+        '-z', 'majority',       # 追踪方式 (black|white|majority)
+        '-t', '5',              # 拐角阈值 (1-100)，值越大线条越平滑
+        '-a', '0.15',           # 拐角平滑度 (0-1.4)，值越大拐角越圆滑
+        '-O', '0.8',            # 优化等级 (0-1)，值越大优化程度越高 
+        '-u', '10',             # 输出单位 (DPI)  
+        '-n',                   # 关闭曲线细分
     ]
     
     # 执行 Potrace 命令
@@ -517,7 +518,7 @@ def png_to_dxf(input_path, output_folder=None):
     if os.path.isdir(input_path):
         # 如果没有指定输出文件夹，则默认创建 output_svg 文件夹
         if output_folder is None:
-            output_folder = os.path.join(input_path, "output_svg")
+            output_folder = os.path.join(input_path, "output")
         
         # 如果输出文件夹不存在，则创建它
         if not os.path.exists(output_folder):
@@ -628,62 +629,134 @@ def process_geometry_for_centerline(simplified_polygon):
         print(f"Error calculating centerlines: {e}")
         return    
 
+# 辅助函数
+def validate_input_path(args, allowed_ext):
+    """验证输入路径有效性"""
+    path = args.input_path
+    if not os.path.exists(path):
+        raise InputError(f"输入路径不存在: {path}")
+    if args.action == 'pdf2images' and not path.lower().endswith('.pdf'):
+        raise InputError("PDF转换需要.pdf文件")
+    if args.action == 'png2dxf' and not any(path.lower().endswith(ext) for ext in allowed_ext):
+        raise InputError(f"仅支持 {', '.join(allowed_ext)} 格式")
+
+def default_output_path(input_path, suffix):
+    """生成默认输出路径"""
+    base_dir = os.path.dirname(input_path)
+    return os.path.join(base_dir, f"{Path(input_path).stem}_{suffix}")
+
+def check_system_requirements():
+    """系统环境检查"""
+    checks = [
+        ('Tesseract OCR', config_manager.get_tesseract_path()),
+        ('Potrace', config_manager.get_potrace_path()),
+        ('Free Disk Space', Util.get_disk_space('/')[0] > 500*1024*1024),
+        ('Memory', Util.get_memory_info()[1] > 2*1024*1024)  # 2GB以上
+    ]
+    
+    print("\n系统环境检查报告:")
+    for name, status in checks:
+        status_str = "✓ OK" if status else "✗ 缺失"
+        print(f"{name:15} {status_str}")
+    
+    if all(status for _, status in checks):
+        print("\n环境检查通过")
+    else:
+        print("\n警告：存在缺失的依赖项")
+
 def main():    
     # 设置命令行参数解析器
-    parser = argparse.ArgumentParser(description="Process PDF and PNG files.")
-    parser.add_argument('action', choices=['pdf2images', 'png2dxf', 'set-tesseract', 'set-potrace'],
-                        help="Action: 'pdf2images', 'png2dxf' or 'set-tesseract'")
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawTextHelpFormatter,
+        description="""Image2CAD 工程图转换工具
+    示例用法:
+    转换PDF为图片: python %(prog)s pdf2images input.pdf output_images/
+    单PNG转DXF   : python %(prog)s png2dxf input.png --dpi 300 --output output.dxf
+    批量转换      : python %(prog)s png2dxf input_folder/ --workers 8"""
+    )
+    
+    # 主命令参数
+    parser.add_argument('action', 
+                        choices=['pdf2images', 'png2dxf', 'set-tesseract', 'set-potrace', 'check-env'],
+                        help="""操作选项:
+    pdf2images   : 将PDF转换为PNG图像
+    png2dxf      : 转换PNG图像为CAD格式
+    set-tesseract: 设置Tesseract OCR路径
+    set-potrace  : 设置Potrace矢量转换路径
+    check-env    : 检查运行环境配置""")
+    
+    # 通用参数
     parser.add_argument('input_path', nargs='?', 
-                        help="Input path (file/folder) or tesseract path for set-tesseract")
+                       help="输入文件/目录路径（对set操作为工具路径）")
     parser.add_argument('output_path', nargs='?',
-                        help="Output path (auto-generated if omitted)")    
-    # 添加可选参数
-    parser.add_argument('--tesseract', '-t',
-                        help="Specify Tesseract path (overrides config)")
-    parser.add_argument('--potrace', 
-                        help="Specify Potrace executable path")
-    parser.add_argument('--log-file', help='指定日志文件路径')
-    parser.add_argument('--no-console', action='store_true', help='禁用控制台输出')
+                       help="输出路径（默认根据输入自动生成）")
+    parser.add_argument('--config', default='config.ini',
+                       help="指定配置文件路径（默认: ./config.ini）")
+    
+    # 转换参数组
+    convert_group = parser.add_argument_group('转换参数')
+    convert_group.add_argument('--dpi', type=int, default=300,
+                              help="图像处理DPI（默认: 300）")
+    convert_group.add_argument('--format', choices=['dxf', 'svg', 'dwg'], default='dxf',
+                              help="输出格式（默认: dxf）")
+    convert_group.add_argument('--workers', type=int, default=0,
+                              help="并发进程数（0=自动检测，默认: 0）")
+    convert_group.add_argument('--overwrite', action='store_true',
+                              help="覆盖已存在文件")
+    
+    # OCR参数组
+    ocr_group = parser.add_argument_group('OCR参数')
+    ocr_group.add_argument('--lang', default='chi_sim+eng',
+                          help="OCR识别语言（默认: chi_sim+eng）")
+    ocr_group.add_argument('--no-ocr', action='store_true',
+                          help="禁用文字识别功能")  
     
     try:
         args = parser.parse_args()
+        setup_logging()  # 初始化日志
+        
+        # 参数验证
+        if args.action in ['pdf2images', 'png2dxf'] and not args.input_path:
+            raise InputError("必须指定输入路径")
+            
+        if args.action == 'set-tesseract' and not args.input_path:
+            raise InputError("必须指定Tesseract路径")
+            
+        if args.action == 'set-potrace' and not args.input_path:
+            raise InputError("必须指定Potrace路径")
+            
+        # 加载配置文件
+        config_manager.load_config(args.config)
+        
+        # 根据选择的 action 执行
+        if args.action == 'pdf2images':
+            validate_input_path(args, ['.pdf'])
+            output_dir = args.output_path or default_output_path(args.input_path, 'pdf_images')
+            pdf_to_images(args.input_path, output_dir, args.dpi, args.workers or cpu_count()//2)
+            
+        elif args.action == 'png2dxf':
+            validate_input_path(args, ['.png', '.jpg', '.jpeg'])
+            output_dir = args.output_path or default_output_path(args.input_path, 'cad_output')
+            png_to_dxf(args.input_path, output_dir)
+            
+        elif args.action == 'set-tesseract':
+            config_manager.set_tesseract_path(args.input_path)
+            log_mgr.log_info(f"Tesseract路径已设置为: {config_manager.get_tesseract_path()}")
+            
+        elif args.action == 'set-potrace':
+            config_manager.set_potrace_path(args.input_path)
+            log_mgr.log_info(f"Potrace路径已设置为: {config_manager.get_potrace_path()}")
+            
+        elif args.action == 'check-env':
+            check_system_requirements()
+            
     except argparse.ArgumentError as e:
-        print(f"参数错误: {e}")
+        log_mgr.log_error(f"参数错误: {e}")
         parser.print_help()
         sys.exit(1)
-    
-    # 根据选择的 action 执行相应的函数
-    if args.action == 'pdf2images':
-        pdf_to_images(args.input_path, args.output_path, 200, 4)
-    elif args.action == 'png2dxf':
-        # 优先使用命令行参数
-        tesseract_path = args.tesseract or config_manager.get_tesseract_path()
-        try:
-            config_manager.set_tesseract_path(tesseract_path)
-        except FileNotFoundError as e:
-            print(f"Tesseract路径无效: {e}")
-            return
-        png_to_dxf(args.input_path, args.output_path)
-    elif args.action == 'set-tesseract':
-        if not args.input_path:
-            print("Error: Missing Tesseract path")
-            return
-        try:
-            config_manager.set_tesseract_path(args.input_path)
-            print(f"Tesseract路径已设置为: {config_manager.get_tesseract_path()}")
-        except Exception as e:
-            print(f"配置失败: {e}")
-        return
-    elif args.action == 'set-potrace':
-        if not args.input_path:
-            print("Error: Missing Tesseract path")
-            return
-        try:
-            config_manager.set_potrace_path(args.input_path)
-            print(f"Potrace路径已设置为: {config_manager._potrace_path()}")
-        except FileNotFoundError as e:
-            print(f"Potrace路径无效: {e}")
-            return
+    except Exception as e:
+        log_mgr.log_error(f"运行错误: {str(e)}")
+        sys.exit(2)
 
 if __name__ == "__main__":
     main()

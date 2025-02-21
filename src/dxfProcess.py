@@ -1,6 +1,7 @@
 import ezdxf
 import os
-from ezdxf import units
+import logging
+from ezdxf import units, options
 from ezdxf.enums import TextEntityAlignment
 from lxml import etree
 import xml.etree.ElementTree as ET
@@ -42,6 +43,19 @@ class dxfProcess:
                     polygons.append(result)
 
         return polygons
+    
+    @staticmethod
+    def setup_dxf_logging():
+        """配置DXF日志输出级别"""
+        # 关闭ezdxf的调试日志       
+        logging.getLogger('ezdxf').setLevel(logging.WARNING)
+        
+        # 禁用特定模块的日志
+        logging.getLogger('ezdxf.entities.dictionary').setLevel(logging.WARNING)
+        logging.getLogger('ezdxf.lldxf.tags').setLevel(logging.ERROR)
+        
+        # 禁用颜色相关日志
+        logging.getLogger('ezdxf.colors').setLevel(logging.CRITICAL)
     
     @classmethod  
     def upgrade_dxf(cls, input_file, output_file, target_version="R2010"):
