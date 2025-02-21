@@ -33,13 +33,13 @@ import os
 import sys
 import tempfile
 import threading
-import OCRProcess
+import ocrProcess
 from Centerline.geometry import Centerline
-from OCRProcess import OCRProcess, config_manager
+from ocrProcess import OCRProcess, config_manager
 from dxfProcess import dxfProcess
-from Error import ProcessingError, InputError, ResourceError, TimeoutError
-from Util import Util
-from LogManager import LogManager, setup_logging
+from errors import ProcessingError, InputError, ResourceError, TimeoutError
+from util import Util
+from logManager import LogManager, setup_logging
 
      
 print_lock = threading.Lock()   

@@ -6,7 +6,7 @@ import os
 import cv2
 import re
 from bs4 import BeautifulSoup
-from ConfigManager import ConfigManager
+from configManager import ConfigManager
 
 
 config_manager = ConfigManager()
