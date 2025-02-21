@@ -117,62 +117,65 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         output_dxf = Path(output_folder) / f"{base_name}.dxf"
         
         # === 阶段3：创建临时工作区 ===
-        with tempfile.TemporaryDirectory(prefix="img2cad_") as tmp_dir:
-            start_time = time.time()
-            # OCR处理
-            hocr_path = Path(tmp_dir) / f"{base_name}_ocr"
-            log_mgr.log_info("执行OCR处理...")
-            ocr_process = OCRProcess()
-            ocr_process.get_text_hocr(input_path, str(hocr_path))
-            log_mgr.log_processing_time("OCR处理", start_time)
-            start_time = time.time()
-            
-            # 转换PBM
-            pbm_path = Path(tmp_dir) / f"{base_name}.pbm"
-            log_mgr.log_info("转换图像格式...")
-            convert_png_to_pbm(input_path, str(pbm_path))
-            log_mgr.log_processing_time("图像格式转换", start_time)
-            start_time = time.time()
-            
-            # 转换DXF（带重试和超时）
-            log_mgr.log_info("转换DXF格式...")
-            convert_pbm_with_retry(str(pbm_path), str(output_dxf))
-            log_mgr.log_processing_time("DXF转换", start_time)
-            start_time = time.time()
-            
-            # === 阶段4：后处理 ===
-            log_mgr.log_info("提取多边形...")
-            polygons = dxfProcess.extract_polygons_from_dxf(str(output_dxf))
-            log_mgr.log_processing_time("多边形提取", start_time)
-            start_time = time.time()
-            
-            log_mgr.log_info("生成中心线...")
-            with ThreadPoolExecutor() as executor:
-                multi_polygon = convert_to_multipolygon(polygons)
-                simplified = multi_polygon.simplify(tolerance=1)
-                centerlines = process_geometry_for_centerline(simplified)
-                merged_lines = merge_lines_with_hough(centerlines.geometry, 0) 
-                log_mgr.log_processing_time("中心线生成", start_time)
-                start_time = time.time()
-                
-             # === 阶段6：ocr整合 ===
-            log_mgr.log_info("获取ocr结果...")
-            text_positions = OCRProcess.parse_hocr_optimized(str(hocr_path) + ".hocr")
-            filtered_lines = filter_text_by_textbbox(merged_lines, text_positions)    
-            log_mgr.log_processing_time("ocr结果获取", start_time)
+        # with tempfile.TemporaryDirectory(prefix="img2cad_") as tmp_dir:
+        start_time = time.time()
+        # OCR处理
+        hocr_path = Path(output_folder) / f"{base_name}_ocr"
+        log_mgr.log_info("执行OCR处理...")
+        ocr_process = OCRProcess()
+        ocr_process.get_text_hocr(input_path, str(hocr_path))
+        log_mgr.log_processing_time("OCR处理", start_time)
+        start_time = time.time()
+        
+        # 转换PBM
+        pbm_path = Path(output_folder) / f"{base_name}.pbm"
+        log_mgr.log_info("转换图像格式...")
+        convert_png_to_pbm(input_path, str(pbm_path))
+        log_mgr.log_processing_time("图像格式转换", start_time)
+        start_time = time.time()
+        
+        # 转换DXF（带重试和超时）
+        log_mgr.log_info("转换DXF格式...")
+        convert_pbm_with_retry(str(pbm_path), str(output_dxf))
+        log_mgr.log_processing_time("DXF转换", start_time)
+        start_time = time.time()
+        
+        # === 阶段4：后处理 ===
+        log_mgr.log_info("提取多边形...")
+        polygons = dxfProcess.extract_polygons_from_dxf(str(output_dxf))
+        log_mgr.log_processing_time("多边形提取", start_time)
+        start_time = time.time()
+        
+        log_mgr.log_info("生成中心线...")
+        with ThreadPoolExecutor() as executor:
+            multi_polygon = convert_to_multipolygon(polygons)
+            multipolygon_to_txt(multi_polygon, filename=output_folder + "/output.txt")
+            simplified = multi_polygon.simplify(tolerance=1)
+            centerlines = process_geometry_for_centerline(simplified)
+            merged_lines = merge_lines_with_hough(centerlines.geometry, 0) 
+            log_mgr.log_processing_time("中心线生成", start_time)
             start_time = time.time()
             
-            # === 阶段6：结果整合 ===
-            log_mgr.log_info("输出结果...")
-            final_output = Path(output_folder) / f"processed_{base_name}.dxf"
-            shutil.copy2(output_dxf, final_output)
-            dxfProcess.append_to_dxf(str(final_output), simplified, [], filtered_lines, text_positions)
-            log_mgr.log_processing_time("结果输出", start_time)
-            start_time = time.time()
-            
-            log_mgr.log_info(f"成功处理文件: {input_path}")
-            log_mgr.log_info(f"结果输出文件: {str(final_output)}")
-            return True, str(final_output)
+            # === 阶段6：ocr整合 ===
+        log_mgr.log_info("获取ocr结果...")
+        text_positions = ocr_process.parse_hocr_optimized(str(hocr_path) + ".hocr")
+        filtered_lines = filter_text_by_textbbox(merged_lines, text_positions)    
+        log_mgr.log_processing_time("ocr结果获取", start_time)
+        start_time = time.time()
+        
+        # === 阶段6：结果整合 ===
+        log_mgr.log_info("输出结果...")
+        final_output = Path(output_folder) / f"output_{base_name}.dxf"
+        # shutil.copy2(output_dxf, final_output)
+        dxfProcess.upgrade_dxf(output_dxf, final_output, "R2010")
+        dxfProcess.append_to_dxf(str(final_output), simplified, [], filtered_lines, text_positions)
+        log_mgr.log_processing_time("结果输出", start_time)
+        start_time = time.time()
+        
+        log_mgr.log_info(f"成功处理文件: {input_path}")
+        log_mgr.log_info(f"结果输出文件: {str(final_output)}")
+        
+        return True, str(final_output)
             
     except InputError as e:
         log_mgr.log_error(f"输入错误: {e}")
@@ -216,6 +219,30 @@ def convert_png_to_pbm(png_path, pbm_path):
     
     cv2.imwrite(pbm_path, binary_img)   
 
+def multipolygon_to_txt(multipolygon, filename="output.txt"):
+    with open(filename, "w") as f:
+        for i, polygon in enumerate(multipolygon.geoms):
+            f.write(f"Polygon {i+1}:\n")  # 标注多边形编号
+            
+            # 处理外边界
+            if polygon.exterior:
+                f.write("  Exterior:\n")
+                for coord in polygon.exterior.coords:
+                    x, y = coord[:2]  # 兼容 2D 和 3D
+                    f.write(f"    {x}, {y}\n")
+            else:
+                f.write("  Empty Polygon\n")
+
+            # 处理内部孔洞
+            for j, interior in enumerate(polygon.interiors):
+                f.write(f"  Hole {j+1}:\n")
+                for coord in interior.coords:
+                    x, y = coord[:2]  # 兼容 2D 和 3D
+                    f.write(f"    {x}, {y}\n")
+            
+            f.write("\n")  # 分隔多边形
+    print(f"TXT 文件已保存为 {filename}")
+    
 # 合并近似的线段
 def merge_lines_with_hough(lines, padding=0):
     """
@@ -335,7 +362,7 @@ def convert_pbm_to_dxf(pbm_path, dxf_path):
     # 执行 potrace 命令  
     # 定义 Potrace 参数
     params = [
-        'D:/Image2CADPy/Image2CAD/potrace',
+        'D:/Image2CADPy/src/potrace',
         pbm_path,
         '-b', 'dxf',
         '-o', dxf_path,

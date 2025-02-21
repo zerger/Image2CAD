@@ -43,34 +43,65 @@ class dxfProcess:
 
         return polygons
     
-    @classmethod
+    @classmethod  
     def upgrade_dxf(cls, input_file, output_file, target_version="R2010"):
-        """正确升级 DXF 版本，并迁移数据"""
+        """升级 DXF 版本，并保留所有数据（Layers, Blocks, Attributes, Layouts）"""
         try:
             # 读取旧 DXF 文件
             old_doc = ezdxf.readfile(input_file)
-            old_msp = old_doc.modelspace()
-        except IOError:
-            print(f"无法读取 DXF 文件: {input_file}")
+        except (IOError, ezdxf.DXFStructureError) as e:
+            print(f"无法读取 DXF 文件: {input_file}, 错误: {e}")
             return False
 
-        # 创建一个新的 DXF 文档（指定版本）
+        # 创建新的 DXF 文档
         new_doc = ezdxf.new(target_version)
-        new_msp = new_doc.modelspace()
 
-        # 复制所有实体到新 DXF
-        entity_count = 0
-        for entity in old_msp:
-            try:
-                new_msp.add_entity(entity.copy())  # 复制实体
-                entity_count += 1
-            except Exception as e:
-                print(f"跳过无法复制的实体: {e}")
+        ### **1. 复制 DXF 头部信息**
+        for key in old_doc.header.varnames():
+            value = old_doc.header[key]
+            if value is not None:  # 只复制有效数据
+                new_doc.header[key] = value
 
-        # 保存到新文件
+        ### **2. 复制 Layers（图层）**
+        for layer in old_doc.layers:
+            if layer.dxf.name not in new_doc.layers:
+                new_doc.layers.new(name=layer.dxf.name, dxfattribs=layer.dxfattribs())
+
+        ### **3. 复制 Blocks（块）**
+        for block in old_doc.blocks:
+            if block.name not in new_doc.blocks:
+                new_block = new_doc.blocks.new(name=block.name)
+                for entity in block:
+                    try:
+                        new_block.add_entity(entity.copy())
+                    except Exception as e:
+                        print(f"跳过无法复制的块实体: {e}")
+
+        ### **4. 复制所有 Layouts（包括 ModelSpace 和 PaperSpace）**
+        for layout_name in old_doc.layout_names():
+            old_layout = old_doc.layout(layout_name)
+            new_layout = new_doc.layout(layout_name) if layout_name != "Model" else new_doc.modelspace()
+
+            entity_count = 0
+            for entity in old_layout:
+                try:
+                    new_entity = entity.copy() if hasattr(entity, "copy") else None
+                    if new_entity:
+                        new_layout.add_entity(new_entity)
+                    else:
+                        new_layout.import_entity(entity)
+                    entity_count += 1
+                except Exception as e:
+                    print(f"跳过无法复制的实体 ({layout_name}): {e}")
+
+            print(f"复制 {layout_name} 的 {entity_count} 个实体")
+
+        ### **5. 保存 DXF**
         new_doc.saveas(output_file)
-        print(f"DXF 版本已升级到 {target_version}，共复制 {entity_count} 个实体，保存至 {output_file}")
+        print(f"DXF 版本已升级到 {target_version}，保留所有数据，保存至 {output_file}")
         return True
+
+
     
     @classmethod
     def append_to_dxf(cls, dxf_file, multi_polygon, ridges, merged_lines, text_result):
@@ -132,7 +163,7 @@ class dxfProcess:
         for text, x, y, width, height in words:  
             if height <= 0:
                 continue      
-            cls.dd_text(msp, text, (x, y), height, 0, layer='文本')  
+            cls.add_text(msp, text, (x, y), height, 0, layer='文本')  
 
         # 保存修改后的 DXF 文件
         doc.saveas(dxf_file)  
