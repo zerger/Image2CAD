@@ -1,0 +1,48 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+        "name": "PDF转图片",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/src/Image2CAD.py",
+        "args": [
+            "pdf2images",
+            "D:/Image2CADPy/TestData/00 P2184 Combination.pdf",
+            "D:/Image2CADPy/TestData/pdfImages/"
+        ],
+        "console": "integratedTerminal",        
+    },
+    {
+        "name": "PNG矢量化",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/src/Image2CAD.py",
+        "args": [
+            "png2dxf",
+            "D:/Image2CADPy/TestData/1.png",
+            "D:/Image2CADPy/TestData/pdfImages/output/"
+        ],
+        "console": "integratedTerminal"       
+    },
+    {
+      "name": "C/C++ Runner: Debug Session",
+      "type": "cppdbg",
+      "request": "launch",
+      "args": [],
+      "stopAtEntry": false,
+      "externalConsole": true,
+      "cwd": "d:/Image2CAD/src",
+      "program": "d:/Image2CAD/src/build/Debug/outDebug",
+      "MIMode": "gdb",
+      "miDebuggerPath": "gdb",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ]
+    }
+  ]
+}
