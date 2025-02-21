@@ -1,11 +1,13 @@
 import ezdxf
 import os
 import logging
+import cv2
 from ezdxf import units, options
 from ezdxf.enums import TextEntityAlignment
 from matplotlib.font_manager import findfont, FontProperties
 import platform
 from lxml import etree
+from typing import Tuple
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from shapely.geometry import Polygon, MultiPolygon, MultiLineString, LineString, box
@@ -120,7 +122,10 @@ class dxfProcess:
 
     
     @classmethod
-    def append_to_dxf(cls, dxf_file, multi_polygon, ridges, merged_lines, text_result):
+    def save_to_dxf(cls, dxf_file, merged_lines, text_result, 
+                    reference_image=None, 
+                    simplified_centerlines=None, 
+                    ridges=None):
         """
         将 Voronoi 图的边和文本追加到现有的 DXF 文件中
         :param dxf_file: 现有的 DXF 文件路径
@@ -128,18 +133,21 @@ class dxfProcess:
         :param merged_lines: 合并后的线段列表，格式为 [(x1, y1, x2, y2), ...] 或 [((x1, y1), (x2, y2)), ...]
         :param text_result: 文本结果列表，格式为 [(text, x0, y0, x1, y1), ...]
         """
-        try:
-            # 读取现有的 DXF 文件
-            doc = ezdxf.readfile(dxf_file)
-        except IOError:
-            print(f"无法读取 DXF 文件: {dxf_file}")
-            return
-
+        # try:
+        #     # 读取现有的 DXF 文件
+        #     doc = ezdxf.new(dxf_file)
+        # except IOError:
+        #     print(f"无法读取 DXF 文件: {dxf_file}")
+        #     return
+        doc = ezdxf.new('R2010')
         msp = doc.modelspace()        
         cls.setup_text_styles(doc)
-
-        cls.add_multipolygon(msp, multi_polygon)
-        cls.add_ridges(msp, ridges)
+        if reference_image:
+            cls.add_image(doc, msp, reference_image)
+        if simplified_centerlines:
+            cls.add_lines(msp, simplified_centerlines)
+        if ridges:
+            cls.add_lines(msp, ridges)
 
         # 批量添加中心线，减少 API 调用
         centerlines = []
@@ -151,7 +159,7 @@ class dxfProcess:
             else:
                 raise ValueError(f"无效的线段格式: {line}")
             msp.add_line(start=(x1, y1), end=(x2, y2), dxfattribs={"color": 3, 'layer': '中心线'})
-    
+        
         # 批量添加文本    
         # for text, x, y, width, height, rotation in text_data:
         #     if height > 0:            
@@ -278,18 +286,72 @@ class dxfProcess:
         )
         return text_entity
     
+    @staticmethod
+    def get_image_size(image_path: str) -> Tuple[int, int]:
+        """获取图像尺寸（宽, 高）"""
+        try:
+            from PIL import Image
+
+            # 检查文件是否存在
+            if not os.path.exists(image_path):
+                raise FileNotFoundError(f"图像文件不存在: {image_path}")
+
+            # 打开图像并获取尺寸
+            with Image.open(image_path) as img:
+                return img.size  # (width, height)
+
+        except ImportError:
+            # 回退到OpenCV方法
+            import cv2
+            img = cv2.imread(image_path)
+            if img is not None:
+                return img.shape[1], img.shape[0]  # (width, height)
+            raise ValueError("无法读取图像文件")
+
+        except Exception as e:
+            raise RuntimeError(f"获取图像尺寸失败: {str(e)}") from e
+    
+    @classmethod
+    def add_image(cls, doc, msp, reference_image):
+        try:
+            # 获取图像实际路径（处理Windows路径）
+            img_path = os.path.abspath(reference_image).replace('\\', '/')
+            
+            # 计算插入参数
+            img_width, img_height = cls.get_image_size(img_path)
+            scale_factor = 1  # 根据实际需求调整
+            
+            # 创建图像定义
+            image_def = doc.add_image_def(
+                filename=img_path,
+                size_in_pixel=(img_width, img_height)
+            )
+            
+            # 在图纸左下角插入图像（位置可调）
+            insert_point = (0, 0)
+            msp.add_image(
+                image_def,
+                insert=insert_point,
+                size_in_units=(img_width*scale_factor, img_height*scale_factor),
+                rotation=0,
+                dxfattribs={'layer': 'REF_IMAGE'}
+            )
+        except Exception as e:
+            print(f"底图插入失败: {str(e)}")
+
     @classmethod
     def add_multipolygon(cls, msp, multipolygon):
-       for polygon in multipolygon.geoms:
-        for ring in [polygon.exterior] + list(polygon.interiors):  # 处理外环 + 内环
-            points = list(ring.coords)  # 获取坐标
-            msp.add_lwpolyline(
-                points, 
-                close=True,
-                dxfattribs={"color": 7, "layer": "轮廓"})  # 添加轻量级多段线 
+        if isinstance(multipolygon, MultiPolygon):
+            for polygon in multipolygon.geoms:
+                for ring in [polygon.exterior] + list(polygon.interiors):  # 处理外环 + 内环
+                    points = list(ring.coords)  # 获取坐标
+                    msp.add_lwpolyline(
+                        points, 
+                        close=True,
+                        dxfattribs={"color": 7, "layer": "轮廓"})  # 添加轻量级多段线 
         
     @classmethod
-    def add_ridges(cls, msp, ridges):
+    def add_lines(cls, msp, ridges):
         """
         批量将 Voronoi 图的边添加到 DXF
         :param msp: DXF ModelSpace

@@ -127,8 +127,8 @@ class OCRProcess:
         # data_270 = process_image(cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE), 270)
 
         # 返回 OCR 数据，包含旋转角度信息
-        return data_0
-
+        return data_0       
+    
     def adjust_hocr_coordinates(self, hocr_data, original_shape, rotated_shape, angle):
         """
         调整 HOCR 数据中的 bbox 坐标，使其适应旋转后的图像

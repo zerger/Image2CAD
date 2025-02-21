@@ -9,6 +9,7 @@ import numpy as np
 from scipy.spatial import Voronoi
 from shapely.ops import unary_union
 from shapely.geometry import LineString, box
+from shapely.prepared import prep
 from scipy.spatial import Voronoi
 import xml.etree.ElementTree as ET
 import numpy as np
@@ -89,6 +90,29 @@ def convert_pbm_with_retry(pbm_path: str, dxf_path: str) -> None:
     except FunctionTimedOut as e:
         log_mgr.log_error("DXF转换超时")
         raise TimeoutError("转换操作超时") from e
+  
+def simplify_preserve_topology(line, tolerance):
+    """保持拓扑结构的简化"""
+    prepared = prep(line)
+    simplified = line.simplify(tolerance)
+    
+    # 确保简化后的线段与原始图形相交
+    if prepared.intersects(simplified):
+        return simplified
+    return line  # 拓扑改变时返回原线
+   
+def parallel_simplify(lines, tolerance):
+    """并行简化线段"""
+    with ThreadPoolExecutor() as executor:
+        futures = []
+        for line in lines.geoms:
+            futures.append(executor.submit(
+                simplify_preserve_topology, 
+                line, 
+                tolerance
+            ))
+        
+    return MultiLineString([f.result() for f in as_completed(futures)])
 
 def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Optional[str]]:
     """
@@ -152,9 +176,10 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
             multi_polygon = convert_to_multipolygon(polygons)
             if multi_polygon:
                 # multipolygon_to_txt(multi_polygon, filename=output_folder + "/output.txt")           
-                simplified = multi_polygon.simplify(tolerance=1)
+                simplified = multi_polygon.simplify(tolerance=0.5)
                 centerlines = process_geometry_for_centerline(simplified)
-                merged_lines = merge_lines_with_hough(centerlines.geometry, 0) 
+                simplified_centerlines = parallel_simplify(centerlines.geometry, tolerance=0.5)
+                merged_lines = merge_lines_with_hough(simplified_centerlines, 0) 
                 log_mgr.log_processing_time("中心线生成", start_time)
                 start_time = time.time()
             
@@ -170,7 +195,7 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         final_output = Path(output_folder) / f"output_{base_name}.dxf"
         # shutil.copy2(output_dxf, final_output)
         # dxfProcess.upgrade_dxf(output_dxf, final_output, "R2010")
-        dxfProcess.append_to_dxf(str(final_output), simplified, [], filtered_lines, text_positions)
+        dxfProcess.save_to_dxf(str(final_output), filtered_lines, text_positions, input_path)
         log_mgr.log_processing_time("结果输出", start_time)
         start_time = time.time()
         
@@ -188,14 +213,8 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         log_mgr.log_error(f"处理超时: {e}")
     except Exception as e:
         log_mgr.log_error(f"未处理的异常发生: {e}")
-    finally:
-        # 清理临时资源
-        for f in temp_files:
-            try:
-                os.remove(f)
-            except:
-                pass
-        log_mgr.log_processing_time("结束", fn_start_time)
+    finally:        
+        log_mgr.log_processing_time(f"{base_name} 结束", fn_start_time)
     
     return False, None
 
@@ -477,7 +496,7 @@ def process_page(page, page_num, output_dir, dpi=150):
     """ 处理单个 PDF 页面并保存为 PNG """
     try:
         pix = page.get_pixmap(dpi=dpi)
-        image_path = os.path.join(output_dir, f"output_page_{page_num + 1}.png")
+        image_path = os.path.join(output_dir, f"pdf_{page_num + 1}.png")
         pix.save(image_path)
         with print_lock:
             print(f"Saved: {image_path}")    

@@ -68,47 +68,7 @@ class Centerline:
         :type attributes: dict
         """
         for key in attributes:
-            setattr(self, key, attributes.get(key))
-            
-    @staticmethod
-    def merge_lines_to_polylines(linestrings):
-        """
-        将多个小线段合并为多段线（Polyline）
-        :param linestrings: 包含多个 LineString 的列表
-        :return: 合并后的 MultiLineString
-        """
-        # 构建图
-        graph = defaultdict(list)
-        for line in linestrings:
-            start, end = line.coords[0], line.coords[-1]
-            graph[start].append(end)
-            graph[end].append(start)
-
-        # 深度优先搜索（DFS）查找连续路径
-        visited = set()
-        polylines = []
-
-        def bfs(start_node):
-            queue = deque()
-            queue.append(start_node)
-            path = []
-            while queue:
-                node = queue.popleft()
-                if node not in visited:
-                    visited.add(node)
-                    path.append(node)
-                    for neighbor in graph[node]:
-                        queue.append(neighbor)
-            return path
-
-        for node in graph:
-            if node not in visited:
-                path = bfs(node)
-                if len(path) >= 2:  # 至少需要两个点才能构成线段
-                    polylines.append(LineString(path))
-
-        # 返回合并后的多段线
-        return MultiLineString(polylines)
+            setattr(self, key, attributes.get(key))    
 
     def _construct_centerline(self):
         vertices, ridges = self._get_voronoi_vertices_and_ridges()
