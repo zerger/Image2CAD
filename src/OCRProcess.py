@@ -6,10 +6,10 @@ import os
 import cv2
 import re
 from bs4 import BeautifulSoup
-from OCRConfigManager import OCRConfigManager
+from ConfigManager import ConfigManager
 
 
-config_manager = OCRConfigManager()
+config_manager = ConfigManager()
 class OCRProcess:
     def __init__(self):
         pass

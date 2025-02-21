@@ -2,9 +2,10 @@ from pathlib import Path
 import os
 import configparser
 
-class OCRConfigManager:
+class ConfigManager:
     CONFIG_FILE = "app_config.ini"
     SECTION = "Tesseract-OCR"
+    _potrace_path = None
     
     def __init__(self):
         self.config = configparser.ConfigParser()
@@ -30,6 +31,33 @@ class OCRConfigManager:
             
         raise EnvironmentError("未找到有效的Tesseract路径")
     
+    @classmethod
+    def set_potrace_path(cls, path):
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Potrace路径无效: {path}")
+        cls._potrace_path = path
+        
+    @classmethod
+    def get_potrace_path(cls):
+        if cls._potrace_path is None:
+            # 尝试自动探测常见路径
+            default_paths = [
+                '/usr/local/bin/potrace',  # Linux/Mac
+                '/usr/bin/potrace',
+                os.path.join(os.getcwd(), 'potrace'),  # 当前目录
+                os.path.join(os.getcwd(), 'src/potrace'),
+                'C:/Program Files/potrace/potrace.exe',  # Windows
+                os.path.join(os.getcwd(), 'potrace.exe'),  # 当前目录
+                os.path.join(os.getcwd(), 'src/potrace.exe')
+            ]
+            for p in default_paths:
+                if os.path.exists(p):
+                    cls._potrace_path = p
+                    break
+            else:
+                raise FileNotFoundError("未找到potrace可执行文件，请通过--potrace参数指定")
+        return cls._potrace_path
+        
     def set_tesseract_path(self, path):
         """设置并保存Tesseract路径"""
         valid_path = self._validate_path(path)

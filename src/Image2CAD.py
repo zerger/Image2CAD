@@ -140,7 +140,7 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         log_mgr.log_processing_time("DXF转换", start_time)
         start_time = time.time()
         
-        # === 阶段4：后处理 ===
+        # === 阶段4：后处理 ===       
         log_mgr.log_info("提取多边形...")
         polygons = dxfProcess.extract_polygons_from_dxf(str(output_dxf))
         log_mgr.log_processing_time("多边形提取", start_time)
@@ -149,14 +149,15 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         log_mgr.log_info("生成中心线...")
         with ThreadPoolExecutor() as executor:
             multi_polygon = convert_to_multipolygon(polygons)
-            multipolygon_to_txt(multi_polygon, filename=output_folder + "/output.txt")
-            simplified = multi_polygon.simplify(tolerance=1)
-            centerlines = process_geometry_for_centerline(simplified)
-            merged_lines = merge_lines_with_hough(centerlines.geometry, 0) 
-            log_mgr.log_processing_time("中心线生成", start_time)
-            start_time = time.time()
+            if multi_polygon:
+                multipolygon_to_txt(multi_polygon, filename=output_folder + "/output.txt")           
+                simplified = multi_polygon.simplify(tolerance=1)
+                centerlines = process_geometry_for_centerline(simplified)
+                merged_lines = merge_lines_with_hough(centerlines.geometry, 0) 
+                log_mgr.log_processing_time("中心线生成", start_time)
+                start_time = time.time()
             
-            # === 阶段6：ocr整合 ===
+        # === 阶段6：ocr整合 ===
         log_mgr.log_info("获取ocr结果...")
         text_positions = ocr_process.parse_hocr_optimized(str(hocr_path) + ".hocr")
         filtered_lines = filter_text_by_textbbox(merged_lines, text_positions)    
@@ -361,8 +362,13 @@ def filter_text_by_textbbox(merged_lines, text_data):
 def convert_pbm_to_dxf(pbm_path, dxf_path):   
     # 执行 potrace 命令  
     # 定义 Potrace 参数
+    potrace_path = config_manager.get_potrace_path()
+    if not os.path.exists(potrace_path):
+        raise FileNotFoundError(f"Potrace可执行文件未找到: {potrace_path}")
+    if not os.access(potrace_path, os.X_OK):
+        raise PermissionError(f"无执行权限: {potrace_path}")
     params = [
-        'D:/Image2CADPy/src/potrace',
+        potrace_path,
         pbm_path,
         '-b', 'dxf',
         '-o', dxf_path,
@@ -376,11 +382,28 @@ def convert_pbm_to_dxf(pbm_path, dxf_path):
     
     # 执行 Potrace 命令
     try:
-        subprocess.run(params, check=True)       
+        result = subprocess.run(
+            params,
+            check=True,  # 自动检查返回码
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        ) 
+          # 二次验证输出文件
+        if not os.path.exists(dxf_path):
+            raise FileNotFoundError(f"DXF文件生成失败: {dxf_path}")
+            
+        return True 
     except subprocess.CalledProcessError as e:
         print(f"Error during Potrace execution: {e}")
     except FileNotFoundError:
         print("Potrace executable not found. Please check the path.")
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        log_mgr.log_error(f"DXF转换失败: {str(e)}")
+        # 清理不完整文件
+        if os.path.exists(dxf_path):
+            os.remove(dxf_path)
+        return False  # 返回失败标识   
 
 def preprocess_image(image_path):
     # 读取灰度图
@@ -608,7 +631,7 @@ def process_geometry_for_centerline(simplified_polygon):
 def main():    
     # 设置命令行参数解析器
     parser = argparse.ArgumentParser(description="Process PDF and PNG files.")
-    parser.add_argument('action', choices=['pdf2images', 'png2dxf', 'set-tesseract'],
+    parser.add_argument('action', choices=['pdf2images', 'png2dxf', 'set-tesseract', 'set-potrace'],
                         help="Action: 'pdf2images', 'png2dxf' or 'set-tesseract'")
     parser.add_argument('input_path', nargs='?', 
                         help="Input path (file/folder) or tesseract path for set-tesseract")
@@ -617,6 +640,8 @@ def main():
     # 添加可选参数
     parser.add_argument('--tesseract', '-t',
                         help="Specify Tesseract path (overrides config)")
+    parser.add_argument('--potrace', 
+                        help="Specify Potrace executable path")
     parser.add_argument('--log-file', help='指定日志文件路径')
     parser.add_argument('--no-console', action='store_true', help='禁用控制台输出')
     
@@ -649,6 +674,16 @@ def main():
         except Exception as e:
             print(f"配置失败: {e}")
         return
+    elif args.action == 'set-potrace':
+        if not args.input_path:
+            print("Error: Missing Tesseract path")
+            return
+        try:
+            config_manager.set_potrace_path(args.input_path)
+            print(f"Potrace路径已设置为: {config_manager._potrace_path()}")
+        except FileNotFoundError as e:
+            print(f"Potrace路径无效: {e}")
+            return
 
 if __name__ == "__main__":
     main()
