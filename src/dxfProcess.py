@@ -288,8 +288,16 @@ class dxfProcess:
                 raise FileNotFoundError(f"图像文件不存在: {image_path}")
 
             # 打开图像并获取尺寸
-            with Image.open(image_path) as img:
-                return img.size  # (width, height)
+            try:
+                with Image.open(image_path) as img:
+                    return img.size
+            except Image.DecompressionBombError:
+                # 安全处理超大图像
+                print(f"警告：图像尺寸超过安全限制 {image_path}")
+                return (0, 0)  # 或抛出特定异常
+            except Exception as e:
+                print(f"获取图像尺寸失败: {str(e)}")
+                raise
 
         except ImportError:
             # 回退到OpenCV方法

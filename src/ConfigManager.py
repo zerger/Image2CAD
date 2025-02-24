@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+from threading import Lock
 import configparser
 from cryptography.fernet import Fernet
 from logManager import LogManager
@@ -8,68 +9,95 @@ log_mgr = LogManager().get_instance()
 class ConfigManager:
     _instance = None
     _config = None
-    _config_path = 'config.ini'
+    _lock = Lock()  # 线程安全锁
+    _config_path = str(Path(__file__).resolve().parent.parent / "config.ini")
     
     def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super(ConfigManager, cls).__new__(cls)
-            cls._instance._init_config()
-        return cls._instance
-    
-    @staticmethod
-    def _encrypt_value(self, value: str) -> str:
-        return self._cipher.encrypt(value.encode()).decode()
-    
-    @staticmethod
-    def _decrypt_value(self, value: str) -> str:
-        return self._cipher.decrypt(value.encode()).decode()
-    
-    def _init_config(self):
-        """初始化配置"""
-        self._config = configparser.ConfigParser()
-        # 设置默认配置
-        self._defaults = {
-            'tesseract_path': '',
-            'potrace_path': '',
-            'log_level': 'INFO',
-            'max_workers': max(1, os.cpu_count() // 2),
-            'pdf_export_dpi': 400,
-            'pdf_scale': 2.0,
-            'pdf_grayscale': True,
-            'pdf_output_dir': './pdf_images'
-        }
-        self._config['DEFAULT'] = {
-            k: str(v) if isinstance(v, (int, float)) else v 
-            for k, v in self._defaults.items()
-        }
-        # 尝试加载现有配置
-        if os.path.exists(self._config_path):
-            self._config.read(self._config_path)
-            
-        # 验证数值型配置
-        self._validate_numeric_setting('pdf_export_dpi', min_val=72, max_val=1200)
-        self._validate_numeric_setting('max_workers', min_val=1, max_val=os.cpu_count())
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super(ConfigManager, cls).__new__(cls)
+                cls.logger = LogManager().get_instance()
+                cls._instance._initialized = False  
+                cls._instance.__init__()
+            return cls._instance
     
     @classmethod
-    def _get_default_fallback(cls, key):
+    def get_instance(cls):
+        """获取单例实例的推荐方法"""
+        return cls()
+    
+    @staticmethod
+    def _encrypt_value(value: str) -> str:
+        return ConfigManager._cipher.encrypt(value.encode()).decode()
+    
+    @staticmethod
+    def _decrypt_value(value: str) -> str:
+        return ConfigManager._cipher.decrypt(value.encode()).decode()
+    
+    def __init__(self):
+        """初始化配置"""
+        if not self._initialized:
+            self._config = configparser.ConfigParser()
+            # 设置默认配置
+            self._defaults = {
+                'tesseract_path': '',
+                'potrace_path': '',
+                'log_level': 'INFO',
+                'max_workers': max(1, os.cpu_count() // 2),
+                'pdf_export_dpi': 400,
+                'pdf_scale': 2.0,
+                'pdf_grayscale': True,
+                'pdf_output_dir': './pdf_images',
+                'max_image_pixels': 256_000_000,
+            }
+            self._config['DEFAULT'] = {
+                k: str(v) if isinstance(v, (int, float)) else v 
+                for k, v in self._defaults.items()
+            }
+            # 尝试加载现有配置
+            if os.path.exists(self._config_path):
+                self._config.read(self._config_path)
+            else:
+                self._save_config()  # 生成默认配置
+            # 立即加载默认值，防止 apply_security_settings() 访问失败
+            for k, v in self._defaults.items():
+                if not self._config.has_option('DEFAULT', k):
+                    self._config.set('DEFAULT', k, str(v))   
+
+            self._initialized = True
+                    
+    def apply_security_settings(self):
+        """应用图像处理安全限制"""
+        try:
+            from PIL import Image
+            max_pixels = self.get_setting(key='max_image_pixels', section='DEFAULT', fallback=256_000_000)
+            Image.MAX_IMAGE_PIXELS = max_pixels
+            log_mgr.log_info(f"设置图像安全像素限制为: {max_pixels}")
+        except ImportError:
+            log_mgr.log_warn("未安装Pillow库，跳过安全设置")            
+            pass
+        
+    
+    def _get_default_fallback(self, key):
         """从初始化配置中获取统一默认值"""
-        return cls._instance._defaults.get(key, None)
+        return self._defaults.get(key, None)
      
     def load_config(self, config_path: str) -> None:
         """加载指定配置文件"""
         self._config_path = config_path
         if not os.path.exists(config_path):
-            self._create_default_config()
+            self._init_config()
             return
-        self._config.read(config_path)
-    
-    @classmethod
-    def get_setting(cls, key: str, section: str = 'DEFAULT', fallback=None):
+        self._config.read(config_path)    
+   
+    def get_setting(self, key: str, section: str = 'DEFAULT', fallback=None):
         """带类型转换和安全回退的获取方法"""
         try:
-            if not cls._instance._config.has_section(section):
+            # 确保fallback不为None
+            safe_fallback = fallback if fallback is not None else self._get_default_fallback(key)
+            if section != 'DEFAULT' and not self._config.has_section(section):
                 raise configparser.NoSectionError(section)
-            value = cls._instance._config.get(section, key)
+            value = self._config.get(section, key)
             
             # 处理空字符串情况
             if value.strip() == '':
@@ -86,42 +114,36 @@ class ConfigManager:
                     return float(value)
                 except ValueError:
                     return value
-        except (configparser.NoSectionError, configparser.NoOptionError) as e:
-            # 确保fallback不为None
-            safe_fallback = fallback if fallback is not None else cls._get_default_fallback(key)
+        except (configparser.NoSectionError, configparser.NoOptionError) as e:            
             log_mgr.log_warn(f"配置[{section}].{key} 不存在，使用回退值: {safe_fallback}")
-            return safe_fallback
-    
-    @classmethod
-    def set_setting(cls, key: str, value, section: str = 'DEFAULT'):
+            return safe_fallback    
+   
+    def set_setting(self, key: str, value, section: str = 'DEFAULT'):
         """更新配置项并保存"""
-        if not cls._instance._config.has_section(section):
-            cls._instance._config.add_section(section)
-        cls._instance._config.set(section, key, str(value))
-        cls._save_config()
-                       
-    @classmethod
-    def get_tesseract_path(cls) -> str:
-        """获取Tesseract路径"""
-        path = cls._instance._config.get('DEFAULT', 'tesseract_path', fallback='')
-        if not path:
-            path = cls._auto_detect_tesseract()
-        return path
+        if not self._config.has_section(section):
+            self._config.add_section(section)
+        self._config.set(section, key, str(value))
+        self._save_config()                       
     
-    @classmethod
-    def set_tesseract_path(cls, path: str) -> None:
+    def get_tesseract_path(self) -> str:
+        """获取Tesseract路径"""
+        path = self._config.get('DEFAULT', 'tesseract_path', fallback='')
+        if not path:
+            path = self._auto_detect_tesseract()
+        return path    
+  
+    def set_tesseract_path(self, path: str) -> None:
         """设置Tesseract路径"""
         if not os.path.exists(path):
             raise FileNotFoundError(f"Tesseract路径无效: {path}")
-        cls._instance._config['DEFAULT']['tesseract_path'] = path
-        cls._save_config()
-    
-    @classmethod
-    def get_potrace_path(cls) -> str:
+        self._config['DEFAULT']['tesseract_path'] = path
+        self._save_config()    
+  
+    def get_potrace_path(self) -> str:
         """获取Potrace路径"""
-        path = cls._instance._config.get('DEFAULT', 'potrace_path', fallback='')
+        path = self._config.get('DEFAULT', 'potrace_path', fallback='')
         if not path:
-            path = cls._auto_detect_potrace()
+            path = self._auto_detect_potrace()
         return path
     
     @staticmethod
@@ -135,10 +157,9 @@ class ConfigManager:
         for p in common_paths:
             if os.path.exists(p):
                 return p
-        raise FileNotFoundError("未找到Tesseract可执行文件")
-        
-    @classmethod
-    def _auto_detect_potrace(cls)->str:        
+        raise FileNotFoundError("未找到Tesseract可执行文件")        
+  
+    def _auto_detect_potrace(self)->str:        
         # 尝试自动探测常见路径
         default_paths = [
             '/usr/local/bin/potrace',  # Linux/Mac
@@ -151,11 +172,11 @@ class ConfigManager:
         ]
         for p in default_paths:
             if os.path.exists(p):
-                cls._potrace_path = p
+                self._potrace_path = p
                 break
         else:
             raise FileNotFoundError("未找到potrace可执行文件，请通过--potrace参数指定")
-        return cls._potrace_path
+        return self._potrace_path
         
     def set_tesseract_path(self, path):
         """设置并保存Tesseract路径"""
@@ -174,17 +195,16 @@ class ConfigManager:
         if not exe_path.exists():
             raise FileNotFoundError(f"路径无效: {exe_path}")
             
-        return str(exe_path.resolve())
-    
-    @classmethod
-    def validate_pdf_settings(cls):
+        return str(exe_path.resolve())    
+  
+    def validate_pdf_settings(self):
         """验证PDF相关配置有效性"""
-        output_dir = cls.get_setting('pdf_output_dir')
+        output_dir = self.get_setting('pdf_output_dir')
         if not os.access(output_dir, os.W_OK):
             raise PermissionError(f"输出目录不可写: {output_dir}")
         
-        if int(cls.get_setting('pdf_export_dpi')) < 72:
-            cls.set_setting('pdf_export_dpi', 72)
+        if int(self.get_setting('pdf_export_dpi')) < 72:
+            self.set_setting('pdf_export_dpi', 72)
             log_mgr.log_warn("DPI过低，已自动设置为72")
     
     def _validate_numeric_setting(self, key, min_val, max_val):
@@ -197,11 +217,10 @@ class ConfigManager:
         except ValueError:
             default = int(self._config['DEFAULT'][key])
             self._config['DEFAULT'][key] = str(default)
-            log_mgr.log_warn(f"配置 {key} 值 {raw_value} 无效，已重置为默认值 {default}")
-                    
-    @classmethod
-    def _save_config(cls) -> None:
+            log_mgr.log_warn(f"配置 {key} 值 {raw_value} 无效，已重置为默认值 {default}")                    
+   
+    def _save_config(self) -> None:
         """保存配置到文件"""
-        with open(cls._instance._config_path, 'w') as f:
-            cls._instance._config.write(f)
+        with open(self._config_path, 'w') as f:
+            self._config.write(f)
     

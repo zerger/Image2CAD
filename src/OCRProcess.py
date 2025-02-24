@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 from configManager import ConfigManager, log_mgr
 
 
-config_manager = ConfigManager()
+config_manager = ConfigManager.get_instance()
 class OCRProcess:
     def __init__(self):
         pass

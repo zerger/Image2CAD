@@ -13,6 +13,9 @@ class LogManager:
         with cls._lock:
             if cls._instance is None:
                 cls._instance = super().__new__(cls)
+                # 初始化日志系统
+                cls._instance.logger = logging.getLogger('app')
+                cls._instance.logger.setLevel(logging.DEBUG)
                 cls._instance._configured = False
                 cls._instance._initialized = False           
             return cls._instance
@@ -28,9 +31,9 @@ class LogManager:
         return cls()
             
     def _configure_logging(self, console=True, file_path=None):
-        """配置日志输出"""
-        self.logger = logging.getLogger('app')
-        self.logger.setLevel(logging.DEBUG)
+        """确保只配置一次日志"""
+        if hasattr(self, '_configured'):
+            return    
         # 清除已有Handler
         for handler in self.logger.handlers[:]:
             self.logger.removeHandler(handler)

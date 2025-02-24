@@ -36,7 +36,7 @@ import tempfile
 import threading
 import ocrProcess
 from Centerline.geometry import Centerline
-from ocrProcess import OCRProcess, config_manager
+from ocrProcess import OCRProcess
 from dxfProcess import dxfProcess
 from configManager import ConfigManager
 from errors import ProcessingError, InputError, ResourceError, TimeoutError
@@ -45,6 +45,7 @@ from logManager import LogManager, setup_logging
      
 print_lock = threading.Lock()  
 log_mgr = LogManager().get_instance()
+config_manager = ConfigManager.get_instance()
 
 def retry(max_attempts: int = 3, delay: int = 1):
     """重试装饰器"""
@@ -175,8 +176,9 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         with ThreadPoolExecutor() as executor:
             multi_polygon = convert_to_multipolygon(polygons)
             if multi_polygon:
-                # multipolygon_to_txt(multi_polygon, filename=output_folder + "/output.txt")           
-                simplified = multi_polygon.simplify(tolerance=0.5)
+                # multipolygon_to_txt(multi_polygon, filename=output_folder + "/output.txt")      
+                filtered_multiPolygon = filter_polygons_by_textbbox(multi_polygon, text_positions, buffer_ratio=0.1)    
+                simplified = filtered_multiPolygon.simplify(tolerance=0.5)
                 centerlines = process_geometry_for_centerline(simplified, 3)
                 simplified_centerlines = parallel_simplify(centerlines.geometry, tolerance=0.5)
                 merged_lines = merge_lines_with_hough(simplified_centerlines, 0) 
@@ -186,7 +188,7 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         # === 阶段6：ocr整合 ===
         log_mgr.log_info("获取ocr结果...")
         text_positions = ocr_process.parse_hocr_optimized(str(hocr_path) + ".hocr")
-        filtered_lines = filter_text_by_textbbox(merged_lines, text_positions)    
+        # filtered_lines = filter_line_by_textbbox(merged_lines, text_positions)    
         log_mgr.log_processing_time("ocr结果获取", start_time)
         start_time = time.time()
         
@@ -195,7 +197,7 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         final_output = Path(output_folder) / f"output_{base_name}.dxf"
         # shutil.copy2(output_dxf, final_output)
         # dxfProcess.upgrade_dxf(output_dxf, final_output, "R2010")
-        dxfProcess.save_to_dxf(str(final_output), filtered_lines, text_positions, input_path)
+        dxfProcess.save_to_dxf(str(final_output), merged_lines, text_positions, input_path)
         log_mgr.log_processing_time("结果输出", start_time)
         start_time = time.time()
         
@@ -332,15 +334,13 @@ def merge_lines_with_hough(lines, padding=0):
 
     return merged_lines  
 
-
-
 def is_line_intersect_bbox(x1, y1, x2, y2, bbox):
     """判断线段 (x1, y1, x2, y2) 是否与 bbox 相交"""
     line = LineString([(x1, y1), (x2, y2)])
     text_bbox = box(*bbox)  # 创建矩形
     return line.intersects(text_bbox)  # 是否有交集
 
-def filter_text_by_textbbox(merged_lines, text_data):
+def filter_line_by_textbbox(merged_lines, text_data):
     """使用 R-tree 加速过滤文本包围盒范围内的中心线"""
     text_index = index.Index()
     text_bboxes = {}
@@ -377,6 +377,68 @@ def filter_text_by_textbbox(merged_lines, text_data):
             
     return filtered_centerlines    
 
+def filter_polygons_by_textbbox(multi_polygon, text_data, buffer_ratio=0.1) -> MultiPolygon:
+    """
+    使用包含检测并扩展文本区域的多边形过滤
+    :param multi_polygon: 输入的多边形集合（MultiPolygon）
+    :param text_data: OCR识别结果 (words, page_height)
+    :param buffer_ratio: 文本区域扩展比例（基于原始尺寸）
+    :return: 过滤后的MultiPolygon
+    """
+    if not isinstance(multi_polygon, MultiPolygon):
+        raise ValueError("输入必须是MultiPolygon类型")
+
+    # 准备带缓冲的文本区域索引
+    text_index = index.Index()
+    text_geoms = []
+    words, page_height = text_data
+    
+    # 构建带缓冲的文本区域
+    for i, (text, x, y, w, h) in enumerate(words):
+        # 计算动态缓冲尺寸（基于文本区域大小）
+        buffer_size = max(w, h) * buffer_ratio
+        buffered_bbox = box(
+            x - buffer_size,
+            y - buffer_size,
+            x + w + buffer_size,
+            y + h + buffer_size
+        )
+        text_geoms.append(prep(buffered_bbox))
+        text_index.insert(i, buffered_bbox.bounds)
+
+    # 构建多边形空间索引
+    poly_index = index.Index()
+    poly_bounds = [poly.bounds for poly in multi_polygon.geoms]
+    for idx, bbox in enumerate(poly_bounds):
+        poly_index.insert(idx, bbox)
+
+    # 并行处理多边形过滤
+    with ThreadPoolExecutor() as executor:
+        futures = []
+        for poly_idx, polygon in enumerate(multi_polygon.geoms):
+            futures.append(executor.submit(
+                _check_polygon_contains,
+                polygon,
+                poly_bounds[poly_idx],
+                text_index,
+                text_geoms
+            ))
+
+        filtered_polygons = [
+            future.result()[0]
+            for future in as_completed(futures)
+            if not future.result()[1]
+        ]
+
+    return MultiPolygon(filtered_polygons)
+
+def _check_polygon_contains(polygon, poly_bbox, text_index, text_geoms):
+    """并行检查单个多边形是否被文本区域包含"""
+    possible_texts = list(text_index.intersection(poly_bbox))
+    for text_idx in possible_texts:
+        if text_geoms[text_idx].contains(polygon):
+            return (polygon, True)  # 被包含需要过滤
+    return (polygon, False)  # 保留多边形
         
 # 使用 Potrace 转换 PBM 为 dxf
 def convert_pbm_to_dxf(pbm_path, dxf_path):   
@@ -516,11 +578,12 @@ def pdf_to_images(pdf_path, output_dir=None, dpi=None):
     if output_dir is None:
         output_dir = os.path.join(dir, "pdfImages")
 
-     # 从配置获取参数    
+     # 从配置获取参数 
+    config_manager.apply_security_settings()    
     if output_dir is None:
         output_dir = config_manager.get_setting(key='pdf_output_dir', fallback='./pdf_images')
     if dpi is None:
-        dpi = int(config_manager.get_setting(key='pdf_export_dpi', fallback=400))
+        dpi = int(config_manager.get_setting(key='pdf_export_dpi', fallback=300))
     max_workers = int(config_manager.get_setting(key='max_workers', fallback=os.cpu_count()//2))
     os.makedirs(output_dir, exist_ok=True)
     
@@ -727,7 +790,7 @@ def main():
         description="""Image2CAD 工程图转换工具
     示例用法:
     转换PDF为图片: python %(prog)s pdf2images input.pdf output_images/
-    单PNG转DXF   : python %(prog)s png2dxf input.png --dpi 600 --output output.dxf
+    单PNG转DXF   : python %(prog)s png2dxf input.png --dpi 300 --output output.dxf
     批量转换      : python %(prog)s png2dxf input_folder/ --workers 8"""
     )
     
@@ -751,8 +814,8 @@ def main():
     
     # 转换参数组
     convert_group = parser.add_argument_group('转换参数')
-    convert_group.add_argument('--dpi', type=int, default=600,
-                              help="图像处理DPI（默认: 600）")
+    convert_group.add_argument('--dpi', type=int, default=300,
+                              help="图像处理DPI（默认: 300）")
     convert_group.add_argument('--format', choices=['dxf', 'svg', 'dwg'], default='dxf',
                               help="输出格式（默认: dxf）")    
     convert_group.add_argument('--overwrite', action='store_true',
