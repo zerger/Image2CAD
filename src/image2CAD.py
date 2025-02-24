@@ -102,7 +102,7 @@ def simplify_preserve_topology(line, tolerance):
         return simplified
     return line  # 拓扑改变时返回原线
    
-def parallel_simplify(lines, tolerance):
+def parallel_simplify(lines, tolerance=0.5):
     """并行简化线段"""
     with ThreadPoolExecutor() as executor:
         futures = []
@@ -172,32 +172,35 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         log_mgr.log_processing_time("多边形提取", start_time)
         start_time = time.time()
         
+         # === 阶段5：ocr整合 ===
+        log_mgr.log_info("获取ocr结果...")
+        text_positions = ocr_process.parse_hocr_optimized(str(hocr_path) + ".hocr")      
+        log_mgr.log_processing_time("ocr结果获取", start_time)
+        start_time = time.time()
+        
+         # === 阶段6：中心线分析 ===
         log_mgr.log_info("生成中心线...")
         with ThreadPoolExecutor() as executor:
             multi_polygon = convert_to_multipolygon(polygons)
             if multi_polygon:
                 # multipolygon_to_txt(multi_polygon, filename=output_folder + "/output.txt")      
-                filtered_multiPolygon = filter_polygons_by_textbbox(multi_polygon, text_positions, buffer_ratio=0.1)    
-                simplified = filtered_multiPolygon.simplify(tolerance=0.5)
-                centerlines = process_geometry_for_centerline(simplified, 3)
-                simplified_centerlines = parallel_simplify(centerlines.geometry, tolerance=0.5)
+                # filtered_multiPolygon = filter_polygons_by_textbbox(multi_polygon, text_positions, buffer_ratio=0.1)    
+                simplified = multi_polygon.simplify(tolerance=0.5)
+                inter_dist = float(config_manager.get_setting('interpolation_distance'))
+                centerlines = process_geometry_for_centerline(simplified, inter_dist)
+                simplified_centerlines = parallel_simplify(centerlines.geometry, tolerance=0.5)               
                 merged_lines = merge_lines_with_hough(simplified_centerlines, 0) 
+                filtered_lines = filter_line_by_textbbox(merged_lines, text_positions)   
                 log_mgr.log_processing_time("中心线生成", start_time)
-                start_time = time.time()
-            
-        # === 阶段6：ocr整合 ===
-        log_mgr.log_info("获取ocr结果...")
-        text_positions = ocr_process.parse_hocr_optimized(str(hocr_path) + ".hocr")
-        # filtered_lines = filter_line_by_textbbox(merged_lines, text_positions)    
-        log_mgr.log_processing_time("ocr结果获取", start_time)
-        start_time = time.time()
+                start_time = time.time()          
+       
         
-        # === 阶段6：结果整合 ===
+        # === 阶段7：结果整合 ===
         log_mgr.log_info("输出结果...")
         final_output = Path(output_folder) / f"output_{base_name}.dxf"
         # shutil.copy2(output_dxf, final_output)
-        # dxfProcess.upgrade_dxf(output_dxf, final_output, "R2010")
-        dxfProcess.save_to_dxf(str(final_output), merged_lines, text_positions, input_path)
+        # dxfProcess.upgrade_dxf(output_dxf, final_output, "R2010")         
+        dxfProcess.save_to_dxf(str(final_output), filtered_lines, text_positions, input_path)
         log_mgr.log_processing_time("结果输出", start_time)
         start_time = time.time()
         
@@ -274,6 +277,8 @@ def merge_lines_with_hough(lines, padding=0):
     :param padding: 图像边界扩展（默认为 0）
     :return: 合并后的线段列表
     """
+    if lines is None or not lines:
+        return []
     if not isinstance(lines, MultiLineString):
         raise ValueError("输入必须是 MultiLineString 类型")
 
@@ -342,6 +347,8 @@ def is_line_intersect_bbox(x1, y1, x2, y2, bbox):
 
 def filter_line_by_textbbox(merged_lines, text_data):
     """使用 R-tree 加速过滤文本包围盒范围内的中心线"""
+    if merged_lines is None or not merged_lines:
+        return []
     text_index = index.Index()
     text_bboxes = {}
 
@@ -456,9 +463,9 @@ def convert_pbm_to_dxf(pbm_path, dxf_path):
         '-o', dxf_path,
         '-z', 'majority',       # 追踪方式 (black|white|majority)
         '-t', '5',              # 拐角阈值 (1-100)，值越大线条越平滑
-        '-a', '0.15',           # 拐角平滑度 (0-1.4)，值越大拐角越圆滑
-        '-O', '0.8',            # 优化等级 (0-1)，值越大优化程度越高 
-        '-u', '10',             # 输出单位 (DPI)  
+        '-a', '0.1',            # 拐角平滑度 (0-1.4)，值越大拐角越圆滑
+        '-O', '1',              # 优化等级 (0-1)，值越大优化程度越高 
+        '-u', '3',              # 输出单位 (DPI)  
         '-n',                   # 关闭曲线细分
     ]
     

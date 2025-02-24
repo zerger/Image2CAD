@@ -49,6 +49,7 @@ class ConfigManager:
                 'pdf_grayscale': True,
                 'pdf_output_dir': './pdf_images',
                 'max_image_pixels': 256_000_000,
+                'interpolation_distance': 0.5,  # 默认插值距离
             }
             self._config['DEFAULT'] = {
                 k: str(v) if isinstance(v, (int, float)) else v 
@@ -217,7 +218,15 @@ class ConfigManager:
         except ValueError:
             default = int(self._config['DEFAULT'][key])
             self._config['DEFAULT'][key] = str(default)
-            log_mgr.log_warn(f"配置 {key} 值 {raw_value} 无效，已重置为默认值 {default}")                    
+            log_mgr.log_warn(f"配置 {key} 值 {raw_value} 无效，已重置为默认值 {default}")    
+            
+    def _validate_centerline_config(self):
+        """验证中心线配置有效性"""
+        inter_dist = float(self.get_setting('interpolation_distance'))
+
+        # 距离范围检查
+        if not (0.1 <= inter_dist <= 5.0):
+            raise ValueError(f"无效插值距离: {inter_dist}，应在0.1-5.0mm之间")      
    
     def _save_config(self) -> None:
         """保存配置到文件"""

@@ -5,12 +5,14 @@ import cv2
 from ezdxf import units, options, DXFAttributeError
 from ezdxf.enums import TextEntityAlignment
 from matplotlib.font_manager import findfont, FontProperties
+from shapely.validation import make_valid
 import platform
 from lxml import etree
 from typing import Tuple
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from shapely.geometry import Polygon, MultiPolygon, MultiLineString, LineString, box
+from shapely.ops import unary_union
 
 class dxfProcess:
     DXF_VERSION_MAP = {
@@ -24,7 +26,7 @@ class dxfProcess:
     }
     
     @classmethod
-    def extract_polygons_from_dxf(cls, file_path):
+    def extract_polygons_from_dxf(cls, file_path, tolerance=0.5):
         """从 DXF 文件中提取多边形数据"""
         try:
             doc = ezdxf.readfile(file_path)
@@ -155,9 +157,9 @@ class dxfProcess:
         if reference_image:
             cls.add_image(doc, msp, reference_image)
         if simplified_centerlines:
-            cls.add_lines(msp, simplified_centerlines)
+            cls.add_lines(msp, simplified_centerlines, 9, '脊线')
         if ridges:
-            cls.add_lines(msp, ridges)
+            cls.add_lines(msp, ridges, 7, '轮廓')        
 
         # 批量添加中心线，减少 API 调用
         centerlines = []
@@ -178,10 +180,11 @@ class dxfProcess:
         if page_height is not None:
             seen_lines = set()  # 用于去重
 
-        for text, x, y, width, height in words:  
-            if height <= 0:
-                continue      
-            cls.add_text(msp, text, (x, y), height, 0, layer='文本')  
+        if words is not None:
+            for text, x, y, width, height in words:  
+                if height <= 0:
+                    continue      
+                cls.add_text(msp, text, (x, y), height, 0, layer='文本')  
 
         # 保存修改后的 DXF 文件
         doc.saveas(dxf_file)  
@@ -371,16 +374,35 @@ class dxfProcess:
     
     @classmethod
     def add_image_with_compatibility(cls, doc, image_def, insert_point, size):
-        """版本兼容的图像添加方法"""       
-        
-        # 根据版本设置显示属性
-        if doc.dxfversion >= 'AC1021':  # 2007+
+        """严格遵循 DXF 规格的图像添加方法"""
+        image = None
+        dxf_version = doc.dxfversion
+
+        try:
+            # 基础图像添加（所有版本支持）
             image = doc.modelspace().add_image(image_def, insert_point, size)
-            image.dxf.image_contrast = 0.4
-            image.dxf.image_brightness = 0.6
-            image.dxf.image_fade = 20 if doc.dxfversion >= 'AC1027' else 10
-        else:          
-           image = cls._legacy_add_image(doc, image_def, insert_point, size)
+
+            # 版本特性开关
+            support_contrast = dxf_version >= 'AC1032'  # 仅2018+支持
+            support_fade = dxf_version >= 'AC1032'
+
+            # 安全设置属性
+            if support_contrast:
+                image.dxf.image_contrast = 70
+                image.dxf.image_brightness = 50
+            if support_fade:
+                image.dxf.image_fade = 20
+
+        except DXFAttributeError as e:
+            print(f"跳过不支持的属性: {str(e)}")
+            # 回退到基本图像对象
+            image = doc.modelspace().add_image(image_def, insert_point, size)
+
+        finally:
+            # 设置通用属性
+            if image:
+                image.dxf.layer = 'REF_IMAGE'               
+            return image
     
     @classmethod
     def add_transparency_overlay(cls, doc, insert_point, size, transparency):
@@ -488,7 +510,7 @@ class dxfProcess:
                         dxfattribs={"color": 7, "layer": "轮廓"})  # 添加轻量级多段线 
         
     @classmethod
-    def add_lines(cls, msp, ridges):
+    def add_lines(cls, msp, ridges, color, layername):
         """
         批量将 Voronoi 图的边添加到 DXF
         :param msp: DXF ModelSpace
@@ -518,12 +540,12 @@ class dxfProcess:
                         collect_lines(line.coords)
                 elif isinstance(child, list) and len(child) >= 2:
                     # 直接处理点集 (x, y) -> LWPOLYLINE
-                    msp.add_lwpolyline(child, close=False, dxfattribs={"color": 9, "layer": "脊线"})
+                    msp.add_lwpolyline(child, close=False, dxfattribs={"color": color, "layer": layername})
 
         # 批量添加线段
         if line_segments:
             msp.add_lwpolyline(
                 [p for segment in line_segments for p in segment],
                 close=False,
-                dxfattribs={"color": 9, "layer": "脊线"}
+                dxfattribs={"color": color, "layer": layername}
             )
