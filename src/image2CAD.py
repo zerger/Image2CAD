@@ -38,13 +38,13 @@ import ocrProcess
 from Centerline.geometry import Centerline
 from ocrProcess import OCRProcess, config_manager
 from dxfProcess import dxfProcess
+from configManager import ConfigManager
 from errors import ProcessingError, InputError, ResourceError, TimeoutError
 from util import Util
 from logManager import LogManager, setup_logging
-
      
-print_lock = threading.Lock()   
-log_mgr = LogManager()
+print_lock = threading.Lock()  
+log_mgr = LogManager().get_instance()
 
 def retry(max_attempts: int = 3, delay: int = 1):
     """重试装饰器"""
@@ -177,7 +177,7 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
             if multi_polygon:
                 # multipolygon_to_txt(multi_polygon, filename=output_folder + "/output.txt")           
                 simplified = multi_polygon.simplify(tolerance=0.5)
-                centerlines = process_geometry_for_centerline(simplified)
+                centerlines = process_geometry_for_centerline(simplified, 3)
                 simplified_centerlines = parallel_simplify(centerlines.geometry, tolerance=0.5)
                 merged_lines = merge_lines_with_hough(simplified_centerlines, 0) 
                 log_mgr.log_processing_time("中心线生成", start_time)
@@ -492,11 +492,11 @@ def remove_paths_in_text_area(svg_file, text_positions):
 
     tree.write('output_no_text_paths.svg')  # 保存修改后的 SVG 
  
-def process_page(page, page_num, output_dir, dpi=150):
+def _process_pdf_page(page, page_num, output_dir, dpi):
     """ 处理单个 PDF 页面并保存为 PNG """
     try:
         pix = page.get_pixmap(dpi=dpi)
-        image_path = os.path.join(output_dir, f"pdf_{page_num + 1}.png")
+        image_path = os.path.join(output_dir, f"pdf_page_{page_num + 1}.png")
         pix.save(image_path)
         with print_lock:
             print(f"Saved: {image_path}")    
@@ -504,24 +504,39 @@ def process_page(page, page_num, output_dir, dpi=150):
         with print_lock:
             print(f"处理第 {page_num + 1} 页时出错：{e}")
         
-def pdf_to_images(pdf_path, output_dir=None, dpi=150, max_workers=4):
+def pdf_to_images(pdf_path, output_dir=None, dpi=None):
     """ 并行转换 PDF 为图像 """
+    try:
+        import fitz  # 延迟导入减少依赖
+    except ImportError:
+        raise RuntimeError("PDF处理需要PyMuPDF: pip install pymupdf")
     pdf_Dir = os.path.abspath(pdf_path)
     dir = os.path.dirname(pdf_Dir)
 
     if output_dir is None:
         output_dir = os.path.join(dir, "pdfImages")
 
+     # 从配置获取参数    
+    if output_dir is None:
+        output_dir = config_manager.get_setting(key='pdf_output_dir', fallback='./pdf_images')
+    if dpi is None:
+        dpi = int(config_manager.get_setting(key='pdf_export_dpi', fallback=400))
+    max_workers = int(config_manager.get_setting(key='max_workers', fallback=os.cpu_count()//2))
     os.makedirs(output_dir, exist_ok=True)
+    
+    # 显示当前配置参数
+    log_mgr.log_info("\n当前PDF转换参数：")
+    log_mgr.log_info(f"├─ 输出目录：{os.path.abspath(output_dir)}")
+    log_mgr.log_info(f"├─ 解析精度：{dpi} DPI")
 
     try:
         doc = fitz.open(pdf_path)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(process_page, doc[page_num], page_num, output_dir, dpi)
+            futures = [executor.submit(_process_pdf_page, doc[page_num], page_num, output_dir, dpi)
                        for page_num in range(len(doc))]
 
             # 等待所有任务完成
-            for future in futures:
+            for future in as_completed(futures):
                 future.result()
 
     except Exception as e:
@@ -633,17 +648,17 @@ def snap_to_grid(geom, precision=0.01):
         return geom
 
 
-def process_geometry_for_centerline(simplified_polygon):
+def process_geometry_for_centerline(simplified_polygon, interpolation_distance=0.5):
     """修复并生成Centerline"""
     try:
         if isinstance(simplified_polygon, MultiPolygon):
             # 如果是 MultiPolygon，修复并确保返回有效的 MultiPolygon
             repaired_geom = repair_multipolygon(simplified_polygon)
-            return Centerline(repaired_geom, 3) 
+            return Centerline(repaired_geom, interpolation_distance) 
         else:
             # 如果是 Polygon，直接处理
             repaired_geom = repair_single_polygon(simplified_polygon)
-            return Centerline(repaired_geom, 3)
+            return Centerline(repaired_geom, interpolation_distance)
     except Exception as e:
         print(f"Error calculating centerlines: {e}")
         return    
@@ -712,7 +727,7 @@ def main():
         description="""Image2CAD 工程图转换工具
     示例用法:
     转换PDF为图片: python %(prog)s pdf2images input.pdf output_images/
-    单PNG转DXF   : python %(prog)s png2dxf input.png --dpi 300 --output output.dxf
+    单PNG转DXF   : python %(prog)s png2dxf input.png --dpi 600 --output output.dxf
     批量转换      : python %(prog)s png2dxf input_folder/ --workers 8"""
     )
     
@@ -736,12 +751,10 @@ def main():
     
     # 转换参数组
     convert_group = parser.add_argument_group('转换参数')
-    convert_group.add_argument('--dpi', type=int, default=300,
-                              help="图像处理DPI（默认: 300）")
+    convert_group.add_argument('--dpi', type=int, default=600,
+                              help="图像处理DPI（默认: 600）")
     convert_group.add_argument('--format', choices=['dxf', 'svg', 'dwg'], default='dxf',
-                              help="输出格式（默认: dxf）")
-    convert_group.add_argument('--workers', type=int, default=0,
-                              help="并发进程数（0=自动检测，默认: 0）")
+                              help="输出格式（默认: dxf）")    
     convert_group.add_argument('--overwrite', action='store_true',
                               help="覆盖已存在文件")
     
@@ -773,7 +786,7 @@ def main():
         if args.action == 'pdf2images':
             validate_input_path(args, ['.pdf'])
             output_dir = args.output_path or default_output_path(args.input_path, 'pdf_images')
-            pdf_to_images(args.input_path, output_dir, args.dpi, args.workers or cpu_count()//2)
+            pdf_to_images(args.input_path, output_dir, args.dpi)
             
         elif args.action == 'png2dxf':
             validate_input_path(args, ['.png', '.jpg', '.jpeg'])

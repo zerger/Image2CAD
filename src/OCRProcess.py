@@ -6,7 +6,7 @@ import os
 import cv2
 import re
 from bs4 import BeautifulSoup
-from configManager import ConfigManager
+from configManager import ConfigManager, log_mgr
 
 
 config_manager = ConfigManager()
@@ -55,7 +55,7 @@ class OCRProcess:
             tesseract_exe,
             str(input_file),
             str(output_path),
-            '-c', 'tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ(),.+-±:/°"⌀ ',
+            '-c', 'tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ()<>,.+-±:/°"⌀ ',
             '-l', 'chi_sim+chi_tra',
             '--psm', '11',
             '-c', 'tessedit_create_hocr=1',

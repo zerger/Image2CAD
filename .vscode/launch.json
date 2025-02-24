@@ -20,7 +20,7 @@
         "program": "${workspaceFolder}/src/Image2CAD.py",
         "args": [
             "png2dxf",
-            "D:/Image2CADPy/TestData/pdfImages/output_page_1.png",
+            "D:/Image2CADPy/TestData/pdfImages/pdf_page_1.png",
             "D:/Image2CADPy/TestData/pdfImages/output/"
         ],
         "console": "integratedTerminal"       

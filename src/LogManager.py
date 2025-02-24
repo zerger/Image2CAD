@@ -1,22 +1,36 @@
 # -*- coding: utf-8 -*-
 import logging
 from logging.handlers import RotatingFileHandler
+from threading import Lock
 import sys
 import time
 
 class LogManager:
     _instance = None
+    _lock = Lock()  # 线程安全锁
     
     def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._configured = False
-            cls._instance.logger = logging.getLogger('app')
-            cls._instance.logger.setLevel(logging.DEBUG)
-        return cls._instance
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+                cls._instance._configured = False
+                cls._instance._initialized = False           
+            return cls._instance
     
-    def configure(self, console=True, file_path=None):
+    def __init__(self):
+        if not self._initialized:
+            self._configure_logging()
+            self._initialized = True
+    
+    @classmethod
+    def get_instance(cls):
+        """获取单例实例的推荐方法"""
+        return cls()
+            
+    def _configure_logging(self, console=True, file_path=None):
         """配置日志输出"""
+        self.logger = logging.getLogger('app')
+        self.logger.setLevel(logging.DEBUG)
         # 清除已有Handler
         for handler in self.logger.handlers[:]:
             self.logger.removeHandler(handler)

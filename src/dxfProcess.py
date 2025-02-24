@@ -2,7 +2,7 @@ import ezdxf
 import os
 import logging
 import cv2
-from ezdxf import units, options
+from ezdxf import units, options, DXFAttributeError
 from ezdxf.enums import TextEntityAlignment
 from matplotlib.font_manager import findfont, FontProperties
 import platform
@@ -13,6 +13,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from shapely.geometry import Polygon, MultiPolygon, MultiLineString, LineString, box
 
 class dxfProcess:
+    DXF_VERSION_MAP = {
+    'R12': 'AC1009',
+    'R2000': 'AC1015',
+    'R2004': 'AC1018',
+    'R2007': 'AC1021',
+    'R2010': 'AC1024',
+    'R2013': 'AC1027',
+    'R2018': 'AC1032'
+    }
+    
     @classmethod
     def extract_polygons_from_dxf(cls, file_path):
         """从 DXF 文件中提取多边形数据"""
@@ -216,7 +226,7 @@ class dxfProcess:
             '轮廓': {'color': 7, 'linetype': 'CONTINUOUS', 'lineweight': 0.15},        
             '脊线': {'color': 9, 'linetype': 'CONTINUOUS', 'lineweight': 0.15},        
             '中心线': {'color': 3, 'linetype': 'CENTER', 'lineweight': 0.30},
-            '文本': {'color': 2, 'linetype': 'HIDDEN', 'lineweight': 0.15}            
+            '文本': {'color': 4, 'linetype': 'HIDDEN', 'lineweight': 0.15}            
         }
 
         # 初始化图层
@@ -266,26 +276,7 @@ class dxfProcess:
         # 设置其他属性
         style.width = 0.7
         style.last_height = 3.0  # 添加默认字高      
-
-    @classmethod
-    def add_text(cls, msp, text, position, height, rotation=0, layer='文本'):
-        text_entity = msp.add_text(
-            text,
-            dxfattribs={
-                'height': height,
-                "rotation": rotation,
-                'color': 2,
-                'layer': layer,
-                'style': '工程字体',  # 需要提前定义文字样式           
-            }
-        )
-        # 正确设置对齐基准点
-        text_entity.set_placement(
-            position,  # 基准点位置
-            align=TextEntityAlignment.LEFT 
-        )
-        return text_entity
-    
+        
     @staticmethod
     def get_image_size(image_path: str) -> Tuple[int, int]:
         """获取图像尺寸（宽, 高）"""
@@ -312,11 +303,145 @@ class dxfProcess:
             raise RuntimeError(f"获取图像尺寸失败: {str(e)}") from e
     
     @classmethod
-    def add_image(cls, doc, msp, reference_image):
+    def set_transparency_effect(cls, doc, entity, transparency):
+        """
+        版本自适应的透明度设置方法
+        :param doc: DXF文档对象
+        :param entity: 需要设置透明度的实体（图层/图像）
+        :param transparency: 0-100（0完全透明，100不透明）
+        """
+        version = doc.dxfversion
+        alpha = int((100 - transparency) * 0.9)  # 转换为DXF的0-90值
+    
+        # 版本分支处理
+        if version >= 'AC1027':  # 2013+
+            entity.dxf.transparency = alpha
+        elif version >= 'AC1021':  # 2007-2010
+            if hasattr(entity.dxf, 'transparency'):
+                entity.dxf.transparency = min(alpha, 80)  # 有限支持
+            else:
+                entity.dxf.color = cls._get_simulated_color(transparency)
+        else:  # 2004及更早
+            entity.dxf.color = cls._get_simulated_color(transparency)
+    
+    @classmethod
+    def _legacy_add_image(cls, doc, image_def, insert_point, size):
+        """旧版本图像添加兼容方案"""
+        # 使用原有兼容逻辑
+        image = doc.modelspace().add_image(image_def, insert_point, size)
+        
+        # 设置旧版本可用属性
         try:
+            image.dxf.contrast = 0.4
+            image.dxf.brightness = 0.6
+            image.dxf.fade = 10
+        except DXFAttributeError:
+            # R12等极旧版本处理
+            cls._preprocess_image_effects(image_def.filename)
+        
+        # 添加透明覆盖层
+        cls.add_transparency_overlay(doc, insert_point, size, 50)
+        return image
+
+    @staticmethod
+    def _preprocess_image_effects(image_path, contrast=1.0, brightness=1.0):
+        """为旧版本DXF预处理图像效果"""
+        try:
+            import cv2
+            img = cv2.imread(image_path)
+            img = cv2.convertScaleAbs(img, alpha=contrast*2.5, beta=(brightness-0.5)*100)
+            cv2.imwrite(image_path, img)
+        except ImportError:
+            print("警告：需要OpenCV进行图像预处理")
+        
+    @staticmethod
+    def _get_simulated_color(transparency):
+        """为旧版本生成模拟透明度的颜色"""
+        # 将透明度转换为灰度值（0=黑，100=白）
+        gray_value = int(255 * (transparency / 100))
+        return ezdxf.colors.rgb2int((gray_value, gray_value, gray_value))
+    
+    @classmethod
+    def add_image_with_compatibility(cls, doc, image_def, insert_point, size):
+        """版本兼容的图像添加方法"""       
+        
+        # 根据版本设置显示属性
+        if doc.dxfversion >= 'AC1021':  # 2007+
+            image = doc.modelspace().add_image(image_def, insert_point, size)
+            image.dxf.image_contrast = 0.4
+            image.dxf.image_brightness = 0.6
+            image.dxf.image_fade = 20 if doc.dxfversion >= 'AC1027' else 10
+        else:          
+           image = cls._legacy_add_image(doc, image_def, insert_point, size)
+    
+    @classmethod
+    def add_transparency_overlay(cls, doc, insert_point, size, transparency):
+        """为旧版本添加透明覆盖层"""
+        overlay = doc.modelspace().add_solid(
+            points=[
+                insert_point,
+                (insert_point[0] + size[0], insert_point[1]),
+                (insert_point[0] + size[0], insert_point[1] + size[1]),
+                insert_point
+            ],
+            dxfattribs={
+                'layer': 'OVERLAY',
+                'color': cls._get_simulated_color(transparency),
+                'elevation': 0.01  # 确保覆盖在图像上方
+            }
+        )
+        return overlay
+            
+    @classmethod
+    def set_layer_transparency(cls, layer, transparency):
+        """
+        兼容各DXF版本的透明度设置方法
+        :param layer: ezdxf.layer.Layer对象
+        :param transparency: 0-100（0=完全透明，100=不透明）
+        """
+        # 转换为透明度值（0-90，其中90=完全透明）
+        alpha = int((100 - transparency) * 0.9)
+        
+        if cls.doc.dxfversion >= 'AC1027':  # 2013+版本
+            layer.dxf.transparency = alpha
+        else:
+            # 旧版本使用颜色重映射
+            remap_color = {
+                100: 7,   # 不透明-白色
+                70: 8,    # 30%透明-灰色
+                50: 9,    # 50%透明-浅灰
+                30: 6     # 70%透明-深灰
+            }
+            closest = min(remap_color.keys(), key=lambda x: abs(x - transparency))
+            layer.dxf.color = remap_color[closest]
+            print(f"旧版本DXF使用替代颜色: {remap_color[closest]}")
+
+    @classmethod
+    def add_text(cls, msp, text, position, height, rotation=0, layer='文本'):
+        text_entity = msp.add_text(
+            text,
+            dxfattribs={
+                'height': height,
+                "rotation": rotation,
+                'color': 4,
+                'layer': layer,
+                'style': '工程字体',  # 需要提前定义文字样式           
+            }
+        )
+        # 正确设置对齐基准点
+        text_entity.set_placement(
+            position,  # 基准点位置
+            align=TextEntityAlignment.LEFT 
+        )
+        return text_entity       
+    
+    @classmethod
+    def add_image(cls, doc, msp, reference_image, transparency=30):
+        try:            
             # 获取图像实际路径（处理Windows路径）
             img_path = os.path.abspath(reference_image).replace('\\', '/')
-            
+            if not os.path.exists(img_path):
+                return
             # 计算插入参数
             img_width, img_height = cls.get_image_size(img_path)
             scale_factor = 1  # 根据实际需求调整
@@ -325,17 +450,21 @@ class dxfProcess:
             image_def = doc.add_image_def(
                 filename=img_path,
                 size_in_pixel=(img_width, img_height)
-            )
+            )   
+            
+            ref_layer_name = 'REF_IMAGE'
+            if ref_layer_name not in doc.layers:
+                doc.layers.add(name=ref_layer_name, 
+                      dxfattribs={
+                          'color': 7,  # 白色                        
+                          'lineweight': 0  # 无边框
+                      })
+            layer = doc.layers.get('REF_IMAGE')
+            cls.set_transparency_effect(doc, layer, transparency)
             
             # 在图纸左下角插入图像（位置可调）
             insert_point = (0, 0)
-            msp.add_image(
-                image_def,
-                insert=insert_point,
-                size_in_units=(img_width*scale_factor, img_height*scale_factor),
-                rotation=0,
-                dxfattribs={'layer': 'REF_IMAGE'}
-            )
+            cls.add_image_with_compatibility(doc, image_def, insert_point, (img_width,img_height))
         except Exception as e:
             print(f"底图插入失败: {str(e)}")
 
