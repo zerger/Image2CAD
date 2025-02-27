@@ -3,6 +3,7 @@ import os
 import platform
 import ctypes
 import psutil
+from pathlib import Path
 
 class Util:
     @staticmethod
@@ -45,3 +46,18 @@ class Util:
         """使用psutil获取磁盘空间"""
         usage = psutil.disk_usage(path)
         return usage.free, usage.total
+    
+    @staticmethod
+    def has_valid_files(path, extensions):
+        """递归检查目录或文件是否包含指定扩展名的文件"""
+        path = Path(path)
+        if not path.exists():
+            return False
+
+        if path.is_file():
+            return path.suffix.lower() in extensions
+
+        for p in path.rglob('*'):
+            if p.is_file() and p.suffix.lower() in extensions:
+                return True
+        return False

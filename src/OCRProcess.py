@@ -6,6 +6,7 @@ import os
 import cv2
 import re
 from bs4 import BeautifulSoup
+import numpy as np
 from configManager import ConfigManager, log_mgr
 
 
@@ -38,6 +39,30 @@ class OCRProcess:
         if missing:
             raise EnvironmentError(f"缺少必要组件: {', '.join(missing)}")
 
+    @staticmethod
+    def ensure_white_background(img_path, output_path):
+        img = cv2.imread(img_path)
+
+        # 如果是彩色图像，先转换为灰度
+        if len(img.shape) == 3:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = img  # 已经是灰度图
+
+        # 二值化
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        # 统计黑色和白色的像素数量
+        white_pixels = np.sum(binary == 255)
+        black_pixels = np.sum(binary == 0)
+
+        # 如果黑色像素多，说明背景是黑色，需要反转
+        if black_pixels > white_pixels:
+            img = cv2.bitwise_not(img)
+
+        # 保存处理后的图片
+        cv2.imwrite(output_path, img)
+    
     def get_text_hocr(self, input_path, output_path):
         """增强版OCR处理函数"""
         self.validate_ocr_env()
@@ -47,16 +72,26 @@ class OCRProcess:
         if not input_file.exists():
             raise FileNotFoundError(f"输入文件不存在: {input_path}")
 
+        img_name = input_file.stem
+        img_dir = input_file.parent
+        wb_img = Path(img_dir) / f"{img_name}_wb.png"
+        OCRProcess.ensure_white_background(input_path, wb_img)
+        
         # 获取可执行路径
         tesseract_exe = config_manager.get_tesseract_path()
-
+        tessdata_dir = Path(tesseract_exe).parent / 'tessdata'  # 语言包目录
+        
+        # 添加白名单（根据中文需求调整）
+        whitelist = r'0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ()<>,.+-±:/°"⌀ '
         # 准备命令
         cmd = [
             tesseract_exe,
-            str(input_file),
+            str(wb_img),
             str(output_path),
-            '-c', 'tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ()<>,.+-±:/°"⌀ ',
-            '-l', 'chi_sim+chi_tra',
+            '-c', 'tessedit_char_whitelist=',
+            '-l', 'chi_sim',
+             # 显式指定语言包路径
+            '--tessdata-dir', str(tessdata_dir),
             '--psm', '11',
             '-c', 'tessedit_create_hocr=1',
             '-c', 'preserve_interword_spaces=1',
@@ -64,15 +99,30 @@ class OCRProcess:
         ]
 
         try:
+            # 设置中文环境变量（仅Windows需要）
+            env = os.environ.copy()
+            if os.name == 'nt':
+                env['TESSDATA_PREFIX'] = str(tessdata_dir.parent)
             result = subprocess.run(
-                cmd,
+                cmd,              
                 capture_output=True,
                 text=True,
-                check=True,          
+                check=True,
+                shell=False,                 
+                env=env 
             )
             return result   
         except subprocess.CalledProcessError as e:
-            error_msg = f"OCR失败: {e.stderr}" if e.stderr else "未知错误"
+            # 增强错误信息
+            error_msg = f"""
+            OCR失败！
+            命令: {e.cmd}
+            错误: {e.stderr if e.stderr else '无输出'}
+            请检查:
+            1. 语言包是否存在: {tessdata_dir}
+            2. 是否包含 chi_sim.traineddata 和 chi_tra.traineddata
+            3. 系统环境变量 TESSDATA_PREFIX 是否指向: {tessdata_dir.parent}
+            """
             raise RuntimeError(error_msg) from e  
 
     def get_text_with_rotation(self, input_path, conf_threshold=50):
@@ -210,3 +260,60 @@ class OCRProcess:
                 print(f"解析行失败：{e}")
 
         return text_positions, page_height
+    
+    def verify_chinese_recognition(self):
+        """生成中文测试图"""
+        text_samples = [
+            "永和九年，岁在癸丑",  # 书法文本
+            "模型准确率: 98.7%",   # 混合文本
+            "Hello世界",          # 中英混合
+            "深圳市腾讯计算机系统有限公司"  # 长文本
+        ]
+        
+        # 生成测试图像
+        from PIL import Image, ImageDraw, ImageFont
+        img = Image.new('RGB', (1000, 600), (255,255,255))
+        draw = ImageDraw.Draw(img)
+        
+        # 使用Windows系统字体
+        try:
+            font = ImageFont.truetype("msyh.ttc", 40)  # 微软雅黑
+        except:
+            font = ImageFont.load_default()
+        
+        y = 10
+        for text in text_samples:
+            draw.text((10, y), text, fill=(0,0,0), font=font)
+            y += 60
+        
+        # 竖向文本
+        x = 800  # 竖向文本起始位置
+        vertical_texts = [
+            "人工智能",
+            "深度学习",
+            "计算机视觉"
+        ]
+        for text in vertical_texts:
+            # 逐字绘制实现竖向文本
+            y = 10
+            for char in text:
+                draw.text((x, y), char, fill=(0,0,0), font=font)
+                y += 60  # 每个字符下移
+            x += 60  # 每列右移
+        
+        test_img = Path("chinese_test.png")
+        img.save(test_img)
+        
+        # 执行OCR
+        output_hocr = test_img.with_name('chinese_test_wb')
+        self.get_text_hocr(test_img, output_hocr)
+        
+        # 解析结果
+        with open(output_hocr, 'r', encoding='utf-8') as f:
+            content = f.read()
+            missing = []
+            for text in text_samples:
+                if text not in content:
+                    missing.append(text)
+            if missing:
+                raise ValueError(f"未识别文本: {missing}")

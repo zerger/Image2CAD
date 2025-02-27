@@ -46,6 +46,7 @@ from logManager import LogManager, setup_logging
 print_lock = threading.Lock()  
 log_mgr = LogManager().get_instance()
 config_manager = ConfigManager.get_instance()
+allowed_ext = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff'}
 
 def retry(max_attempts: int = 3, delay: int = 1):
     """重试装饰器"""
@@ -149,6 +150,7 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         hocr_path = Path(output_folder) / f"{base_name}_ocr"
         log_mgr.log_info("执行OCR处理...")
         ocr_process = OCRProcess()
+        # ocr_process.verify_chinese_recognition()  
         ocr_process.get_text_hocr(input_path, str(hocr_path))
         log_mgr.log_processing_time("OCR处理", start_time)
         start_time = time.time()
@@ -182,11 +184,10 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         log_mgr.log_info("生成中心线...")
         with ThreadPoolExecutor() as executor:
             multi_polygon = convert_to_multipolygon(polygons)
-            if multi_polygon:
-                # multipolygon_to_txt(multi_polygon, filename=output_folder + "/output.txt")      
+            if multi_polygon:                   
                 # filtered_multiPolygon = filter_polygons_by_textbbox(multi_polygon, text_positions, buffer_ratio=0.1)    
                 simplified = multi_polygon.simplify(tolerance=0.5)
-                inter_dist = float(config_manager.get_setting('interpolation_distance'))
+                inter_dist = float(config_manager.get_setting('interpolation_distance', fallback=3))
                 centerlines = process_geometry_for_centerline(simplified, inter_dist)
                 simplified_centerlines = parallel_simplify(centerlines.geometry, tolerance=0.5)               
                 merged_lines = merge_lines_with_hough(simplified_centerlines, 0) 
@@ -413,39 +414,16 @@ def filter_polygons_by_textbbox(multi_polygon, text_data, buffer_ratio=0.1) -> M
         text_geoms.append(prep(buffered_bbox))
         text_index.insert(i, buffered_bbox.bounds)
 
-    # 构建多边形空间索引
-    poly_index = index.Index()
-    poly_bounds = [poly.bounds for poly in multi_polygon.geoms]
-    for idx, bbox in enumerate(poly_bounds):
-        poly_index.insert(idx, bbox)
+    poly_geoms = list(multi_polygon.geoms)
 
-    # 并行处理多边形过滤
+    def check_polygon(polygon):
+        return polygon, any(polygon.intersects(text) for text in text_geoms)
+
     with ThreadPoolExecutor() as executor:
-        futures = []
-        for poly_idx, polygon in enumerate(multi_polygon.geoms):
-            futures.append(executor.submit(
-                _check_polygon_contains,
-                polygon,
-                poly_bounds[poly_idx],
-                text_index,
-                text_geoms
-            ))
-
-        filtered_polygons = [
-            future.result()[0]
-            for future in as_completed(futures)
-            if not future.result()[1]
-        ]
+        futures = [executor.submit(check_polygon, poly) for poly in poly_geoms]
+        filtered_polygons = [f.result()[0] for f in as_completed(futures) if not f.result()[1]]
 
     return MultiPolygon(filtered_polygons)
-
-def _check_polygon_contains(polygon, poly_bbox, text_index, text_geoms):
-    """并行检查单个多边形是否被文本区域包含"""
-    possible_texts = list(text_index.intersection(poly_bbox))
-    for text_idx in possible_texts:
-        if text_geoms[text_idx].contains(polygon):
-            return (polygon, True)  # 被包含需要过滤
-    return (polygon, False)  # 保留多边形
         
 # 使用 Potrace 转换 PBM 为 dxf
 def convert_pbm_to_dxf(pbm_path, dxf_path):   
@@ -462,8 +440,8 @@ def convert_pbm_to_dxf(pbm_path, dxf_path):
         '-b', 'dxf',
         '-o', dxf_path,
         '-z', 'majority',       # 追踪方式 (black|white|majority)
-        '-t', '5',              # 拐角阈值 (1-100)，值越大线条越平滑
-        '-a', '0.1',            # 拐角平滑度 (0-1.4)，值越大拐角越圆滑
+        '-t', '10',              # 拐角阈值 (1-100)，值越大线条越平滑
+        '-a', '0.15',            # 拐角平滑度 (0-1.4)，值越大拐角越圆滑
         '-O', '1',              # 优化等级 (0-1)，值越大优化程度越高 
         '-u', '3',              # 输出单位 (DPI)  
         '-n',                   # 关闭曲线细分
@@ -590,7 +568,7 @@ def pdf_to_images(pdf_path, output_dir=None, dpi=None):
     if output_dir is None:
         output_dir = config_manager.get_setting(key='pdf_output_dir', fallback='./pdf_images')
     if dpi is None:
-        dpi = int(config_manager.get_setting(key='pdf_export_dpi', fallback=300))
+        dpi = int(config_manager.get_setting(key='pdf_export_dpi', fallback=200))
     max_workers = int(config_manager.get_setting(key='max_workers', fallback=os.cpu_count()//2))
     os.makedirs(output_dir, exist_ok=True)
     
@@ -631,7 +609,7 @@ def png_to_dxf(input_path, output_folder=None):
         # 遍历文件夹中的所有 PNG 文件
         process_files_in_parallel(input_path, output_folder)             
     # 如果输入是文件
-    elif os.path.isfile(input_path) and input_path.endswith(".png"):
+    elif os.path.isfile(input_path) and Util.has_valid_files(input_path, allowed_ext):
         # 如果没有指定输出文件夹，则使用输入文件的目录
         if output_folder is None:
             output_folder = os.path.dirname(input_path)
@@ -731,21 +709,7 @@ def process_geometry_for_centerline(simplified_polygon, interpolation_distance=0
             return Centerline(repaired_geom, interpolation_distance)
     except Exception as e:
         print(f"Error calculating centerlines: {e}")
-        return    
-
-def has_valid_files(path, extensions):
-    """递归检查目录或文件是否包含指定扩展名的文件"""
-    path = Path(path)
-    if not path.exists():
-        return False
-        
-    if path.is_file():
-        return path.suffix.lower() in extensions
-        
-    for p in path.rglob('*'):
-        if p.is_file() and p.suffix.lower() in extensions:
-            return True
-    return False
+        return  
 
 # 辅助函数
 def validate_input_path(args, allowed_ext):
@@ -755,12 +719,11 @@ def validate_input_path(args, allowed_ext):
         raise InputError(f"输入路径不存在: {path}")
     if args.action == 'pdf2images' and not path.lower().endswith('.pdf'):
         raise InputError("PDF转换需要.pdf文件")
-    if args.action == 'png2dxf':
-        allowed_ext = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff'}
+    if args.action == 'png2dxf':        
         input_path = Path(path)
         if not input_path.exists():
             raise ValueError(f"输入路径不存在: {path}")        
-        if not has_valid_files(input_path, allowed_ext):
+        if not Util.has_valid_files(input_path, allowed_ext):
             raise ValueError(
                 f"路径中未找到支持的图像文件（允许的扩展名：{', '.join(allowed_ext)}）\n"
                 f"输入路径：{input_path}"
@@ -797,7 +760,7 @@ def main():
         description="""Image2CAD 工程图转换工具
     示例用法:
     转换PDF为图片: python %(prog)s pdf2images input.pdf output_images/
-    单PNG转DXF   : python %(prog)s png2dxf input.png --dpi 300 --output output.dxf
+    单PNG转DXF   : python %(prog)s png2dxf input.png --dpi 200 --output output.dxf
     批量转换      : python %(prog)s png2dxf input_folder/ --workers 8"""
     )
     
@@ -821,8 +784,8 @@ def main():
     
     # 转换参数组
     convert_group = parser.add_argument_group('转换参数')
-    convert_group.add_argument('--dpi', type=int, default=300,
-                              help="图像处理DPI（默认: 300）")
+    convert_group.add_argument('--dpi', type=int, default=200,
+                              help="图像处理DPI（默认: 200）")
     convert_group.add_argument('--format', choices=['dxf', 'svg', 'dwg'], default='dxf',
                               help="输出格式（默认: dxf）")    
     convert_group.add_argument('--overwrite', action='store_true',

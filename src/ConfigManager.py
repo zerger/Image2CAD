@@ -44,12 +44,12 @@ class ConfigManager:
                 'potrace_path': '',
                 'log_level': 'INFO',
                 'max_workers': max(1, os.cpu_count() // 2),
-                'pdf_export_dpi': 400,
+                'pdf_export_dpi': 200,
                 'pdf_scale': 2.0,
                 'pdf_grayscale': True,
                 'pdf_output_dir': './pdf_images',
                 'max_image_pixels': 256_000_000,
-                'interpolation_distance': 0.5,  # 默认插值距离
+                'interpolation_distance': 3, 
             }
             self._config['DEFAULT'] = {
                 k: str(v) if isinstance(v, (int, float)) else v 

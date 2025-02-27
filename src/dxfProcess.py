@@ -26,7 +26,7 @@ class dxfProcess:
     }
     
     @classmethod
-    def extract_polygons_from_dxf(cls, file_path, tolerance=0.5):
+    def extract_polygons_from_dxf(cls, file_path):
         """从 DXF 文件中提取多边形数据"""
         try:
             doc = ezdxf.readfile(file_path)
@@ -137,7 +137,7 @@ class dxfProcess:
     def save_to_dxf(cls, dxf_file, merged_lines, text_result, 
                     reference_image=None, 
                     simplified_centerlines=None, 
-                    ridges=None):
+                    polygon=None):
         """
         将 Voronoi 图的边和文本追加到现有的 DXF 文件中
         :param dxf_file: 现有的 DXF 文件路径
@@ -158,33 +158,25 @@ class dxfProcess:
             cls.add_image(doc, msp, reference_image)
         if simplified_centerlines:
             cls.add_lines(msp, simplified_centerlines, 9, '脊线')
-        if ridges:
-            cls.add_lines(msp, ridges, 7, '轮廓')        
-
-        # 批量添加中心线，减少 API 调用
-        centerlines = []
-        for line in merged_lines:
-            if len(line) == 4:  # (x1, y1, x2, y2)
-                x1, y1, x2, y2 = line
-            elif len(line) == 2:  # ((x1, y1), (x2, y2))
-                (x1, y1), (x2, y2) = line
-            else:
-                raise ValueError(f"无效的线段格式: {line}")
-            msp.add_line(start=(x1, y1), end=(x2, y2), dxfattribs={"color": 3, 'layer': '中心线'})
-        
-        # 批量添加文本    
-        # for text, x, y, width, height, rotation in text_data:
-        #     if height > 0:            
-        #         add_text(msp, text, (x, y), width, height, rotation, layer='文本')     
-        words, page_height = text_result
-        if page_height is not None:
-            seen_lines = set()  # 用于去重
-
-        if words is not None:
-            for text, x, y, width, height in words:  
-                if height <= 0:
-                    continue      
-                cls.add_text(msp, text, (x, y), height, 0, layer='文本')  
+        if polygon:
+            cls.add_multipolygon(msp, polygon, 7, '轮廓')     
+        if merged_lines:
+            for line in merged_lines:
+                if len(line) == 4:  # (x1, y1, x2, y2)
+                    x1, y1, x2, y2 = line
+                elif len(line) == 2:  # ((x1, y1), (x2, y2))
+                    (x1, y1), (x2, y2) = line
+                else:
+                    raise ValueError(f"无效的线段格式: {line}")
+                msp.add_line(start=(x1, y1), end=(x2, y2), dxfattribs={"color": 3, 'layer': '中心线'})
+                   
+        if text_result:
+            words, page_height = text_result  
+            if page_height is not None and words is not None:
+                for text, x, y, width, height in words:  
+                    if height <= 0:
+                        continue      
+                    cls.add_text(msp, text, (x, y), height, 0, layer='文本')  
 
         # 保存修改后的 DXF 文件
         doc.saveas(dxf_file)  
@@ -499,7 +491,7 @@ class dxfProcess:
             print(f"底图插入失败: {str(e)}")
 
     @classmethod
-    def add_multipolygon(cls, msp, multipolygon):
+    def add_multipolygon(cls, msp, multipolygon, color, layername):
         if isinstance(multipolygon, MultiPolygon):
             for polygon in multipolygon.geoms:
                 for ring in [polygon.exterior] + list(polygon.interiors):  # 处理外环 + 内环
@@ -507,7 +499,7 @@ class dxfProcess:
                     msp.add_lwpolyline(
                         points, 
                         close=True,
-                        dxfattribs={"color": 7, "layer": "轮廓"})  # 添加轻量级多段线 
+                        dxfattribs={"color": color, "layer": layername})  # 添加轻量级多段线 
         
     @classmethod
     def add_lines(cls, msp, ridges, color, layername):
