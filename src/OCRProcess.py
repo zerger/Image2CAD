@@ -295,10 +295,20 @@ class OCRProcess:
         ]
         for text in vertical_texts:
             # 逐字绘制实现竖向文本
-            y = 10
+            y = 10 + (len(text) - 1) * 60  # 从下往上绘制，初始位置在底部
             for char in text:
-                draw.text((x, y), char, fill=(0,0,0), font=font)
-                y += 60  # 每个字符下移
+                # 创建临时图像
+                text_image = Image.new('RGBA', (50, 100), (255, 255, 255, 0))
+                text_draw = ImageDraw.Draw(text_image)
+                text_draw.text((0, 0), char, fill=(0, 0, 0), font=font)
+                
+                # 旋转文字图像90度
+                rotated_text = text_image.rotate(90, expand=1)
+                
+                # 将旋转后的文字粘贴到主图像
+                img.paste(rotated_text, (x, y), rotated_text)
+                
+                y -= 60  # 每个字符上移
             x += 60  # 每列右移
         
         test_img = Path("chinese_test.png")

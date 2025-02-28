@@ -150,7 +150,7 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         hocr_path = Path(output_folder) / f"{base_name}_ocr"
         log_mgr.log_info("执行OCR处理...")
         ocr_process = OCRProcess()
-        # ocr_process.verify_chinese_recognition()  
+        ocr_process.verify_chinese_recognition()  
         ocr_process.get_text_hocr(input_path, str(hocr_path))
         log_mgr.log_processing_time("OCR处理", start_time)
         start_time = time.time()
