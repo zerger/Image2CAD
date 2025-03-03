@@ -221,7 +221,7 @@ class dxfProcess:
             '轮廓': {'color': 7, 'linetype': 'CONTINUOUS', 'lineweight': 0.15},        
             '脊线': {'color': 9, 'linetype': 'CONTINUOUS', 'lineweight': 0.15},        
             '中心线': {'color': 3, 'linetype': 'CENTER', 'lineweight': 0.30},
-            '文本': {'color': 4, 'linetype': 'HIDDEN', 'lineweight': 0.15}            
+            '文本': {'color': 1, 'linetype': 'HIDDEN', 'lineweight': 0.15}            
         }
 
         # 初始化图层
@@ -445,7 +445,7 @@ class dxfProcess:
             dxfattribs={
                 'height': height,
                 "rotation": rotation,
-                'color': 4,
+                'color': 1,
                 'layer': layer,
                 'style': '工程字体',  # 需要提前定义文字样式           
             }

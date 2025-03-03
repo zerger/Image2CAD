@@ -8,8 +8,9 @@
         "program": "${workspaceFolder}/src/Image2CAD.py",
         "args": [
             "pdf2images",
-            "D:/Image2CADPy/TestData/00 P2184 Combination.pdf",
-            "D:/Image2CADPy/TestData/pdfImages/"
+            "D:/Image2CADPy/TestData/11-默认图名-K2-A1.pdf",
+            "D:/Image2CADPy/TestData/pdfImages/",
+            "--dpi=400"
         ],
         "console": "integratedTerminal",        
     },
@@ -20,8 +21,19 @@
         "program": "${workspaceFolder}/src/Image2CAD.py",
         "args": [
             "png2dxf",
-            "D:/Image2CADPy/TestData/1cn.jpg",
-            "D:/Image2CADPy/TestData/pdfImages/output/"
+            "D:/Image2CADPy/TestData/pdfImages/page_1.png",
+            "D:/Image2CADPy/TestData/pdfImages/output/",            
+        ],
+        "console": "integratedTerminal"       
+    },
+    {
+        "name": "设置Tesseract",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/src/Image2CAD.py",
+        "args": [
+            "set-tesseract",
+            "E:/Program Files/Tesseract-OCR/tesseract.exe",            
         ],
         "console": "integratedTerminal"       
     },

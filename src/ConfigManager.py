@@ -119,11 +119,14 @@ class ConfigManager:
             log_mgr.log_warn(f"配置[{section}].{key} 不存在，使用回退值: {safe_fallback}")
             return safe_fallback    
    
-    def set_setting(self, key: str, value, section: str = 'DEFAULT'):
+    def set_setting(self, key: str, value, section: str = 'DEFAULT'):      
         """更新配置项并保存"""
-        if not self._config.has_section(section):
-            self._config.add_section(section)
-        self._config.set(section, key, str(value))
+        if section == "DEFAULT":  # 直接写入 DEFAULT
+            self._config["DEFAULT"][key] = str(value)
+        else:
+            if not self._config.has_section(section):
+                self._config.add_section(section)
+            self._config.set(section, key, str(value))       
         self._save_config()                       
     
     def get_tesseract_path(self) -> str:
@@ -181,10 +184,10 @@ class ConfigManager:
         
     def set_tesseract_path(self, path):
         """设置并保存Tesseract路径"""
-        valid_path = self._validate_path(path)
-        self.config.set(self.SECTION, 'tesseract_path', valid_path)
-        with open(self.CONFIG_FILE, 'w') as f:
-            self.config.write(f)
+        valid_path = self._validate_path(path)      
+        self.set_setting('tesseract_path', valid_path)
+        with open(self._config_path, 'w') as f:
+            self._config.write(f)
         return valid_path
     
     def _validate_path(self, path):

@@ -150,7 +150,7 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         hocr_path = Path(output_folder) / f"{base_name}_ocr"
         log_mgr.log_info("执行OCR处理...")
         ocr_process = OCRProcess()
-        ocr_process.verify_chinese_recognition()  
+        # ocr_process.verify_chinese_recognition()  
         ocr_process.get_text_hocr(input_path, str(hocr_path))
         log_mgr.log_processing_time("OCR处理", start_time)
         start_time = time.time()
@@ -541,8 +541,8 @@ def remove_paths_in_text_area(svg_file, text_positions):
  
 def _process_pdf_page(page, page_num, output_dir, dpi):
     """ 处理单个 PDF 页面并保存为 PNG """
-    try:
-        pix = page.get_pixmap(dpi=dpi)
+    try:         
+        pix = page.get_pixmap(matrix=fitz.Matrix(dpi/72, dpi/72), colorspace=fitz.csRGB, alpha=False)
         image_path = os.path.join(output_dir, f"pdf_page_{page_num + 1}.png")
         pix.save(image_path)
         with print_lock:
@@ -561,7 +561,8 @@ def pdf_to_images(pdf_path, output_dir=None, dpi=None):
     dir = os.path.dirname(pdf_Dir)
 
     if output_dir is None:
-        output_dir = os.path.join(dir, "pdfImages")
+        pdf_name = Path(pdf_path).stem.replace(" ", "_")
+        output_dir = os.path.join(dir, pdf_name)
 
      # 从配置获取参数 
     config_manager.apply_security_settings()    
