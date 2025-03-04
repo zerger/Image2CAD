@@ -26,8 +26,16 @@ class dxfProcess:
     }
     
     @classmethod
-    def extract_polygons_from_dxf(cls, file_path):
-        """从 DXF 文件中提取多边形数据"""
+    def extract_polygons_from_dxf(cls, file_path, show_progress=True):
+        """
+        从 DXF 文件中提取多边形数据
+        :param file_path: DXF文件路径
+        :param show_progress: 是否显示进度条
+        :return: 多边形列表
+        """
+        if show_progress:
+            print(f"正在读取DXF文件: {file_path}")
+        
         try:
             doc = ezdxf.readfile(file_path)
         except IOError:
@@ -36,6 +44,10 @@ class dxfProcess:
 
         msp = doc.modelspace()
         entities = list(msp.query("POLYLINE LWPOLYLINE"))
+        
+        if show_progress:
+            print(f"找到 {len(entities)} 个多边形实体")
+        
         polygons = []
 
         def process_entity(entity):
@@ -49,15 +61,32 @@ class dxfProcess:
                 if len(points) >= 3:
                     return points
             return None
+        
         max_workers = max(1, os.cpu_count() // 2)
+        
+        if show_progress:
+            print(f"使用 {max_workers} 个线程并行处理实体...")
+        
         # 使用线程池并行处理实体
         with ThreadPoolExecutor(max_workers) as executor:
             futures = [executor.submit(process_entity, entity) for entity in entities]
-            for future in futures:
-                result = future.result()
-                if result is not None:
-                    polygons.append(result)
+            
+            # 使用tqdm显示处理进度
+            if show_progress:
+                import tqdm
+                for future in tqdm.tqdm(as_completed(futures), total=len(futures), desc="处理DXF实体"):
+                    result = future.result()
+                    if result is not None:
+                        polygons.append(result)
+            else:
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result is not None:
+                        polygons.append(result)
 
+        if show_progress:
+            print(f"成功提取 {len(polygons)} 个多边形")
+        
         return polygons
     
     @staticmethod

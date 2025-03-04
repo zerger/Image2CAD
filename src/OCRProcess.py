@@ -72,10 +72,10 @@ class OCRProcess:
         if not input_file.exists():
             raise FileNotFoundError(f"输入文件不存在: {input_path}")
 
-        img_name = input_file.stem
-        img_dir = input_file.parent
-        wb_img = Path(img_dir) / f"{img_name}_wb.png"
-        OCRProcess.ensure_white_background(input_path, wb_img)
+        #img_name = input_file.stem
+        #img_dir = input_file.parent
+        #wb_img = Path(img_dir) / f"{img_name}_wb.png"
+        #OCRProcess.ensure_white_background(input_path, wb_img)
         
         # 获取可执行路径
         tesseract_exe = config_manager.get_tesseract_path()
@@ -86,7 +86,7 @@ class OCRProcess:
         # 准备命令
         cmd = [
             tesseract_exe,
-            str(wb_img),
+            str(input_file),
             str(output_path),
             '-c', 'tessedit_char_whitelist=',
             '-l', 'chi_sim',
@@ -210,56 +210,272 @@ class OCRProcess:
 
     def convert_to_dxf_coords(self, x0, y0, x1, y1, page_height):
         """
-        根据页面高度，将 HOCR 中的 bbox 坐标转换为 DXF 坐标系。   
-        """   
+        将hOCR坐标转换为DXF坐标系
+        :param x0, y0, x1, y1: hOCR边界框坐标
+        :param page_height: 页面高度
+        :return: x, y, width, height（DXF坐标系）
+        """
+        # 计算宽度和高度
         width = x1 - x0
         height = y1 - y0
-        x_new, y_new = x0, page_height - (y0 + height)      
-        return x_new, y_new, width, height
+        
+        # 在DXF坐标系中，y轴方向是相反的，原点在左下角
+        if page_height is not None:
+            y = page_height - y1  # 转换y坐标
+        else:
+            # 如果页面高度未知，保持原样
+            y = y0
+        
+        return x0, y, width, height
 
-    def parse_hocr_optimized(self, hocr_file, min_confidence=70):
+    def parse_hocr_optimized(self, hocr_file, min_confidence=70, max_height_diff=5, verbose=False):
         """
-        解析 hOCR 文件，仅提取 ocr_line 级别的文本
+        解析 hOCR 文件，提取 ocr_line 级别的文本，并处理高度不一致的情况
         :param hocr_file: hOCR 文件路径
         :param min_confidence: 最小置信度阈值
-        :return: [(文本, x, y, width, height)]
+        :param max_height_diff: 同一行内允许的最大高度差异（像素）
+        :param verbose: 是否显示详细日志
+        :return: [(文本, x, y, width, height)], page_height
         """
         text_positions = []
         page_height = None
+        
+        # 使用更高效的lxml解析器（如果可用）
+        parser = 'lxml' if 'lxml' in BeautifulSoup.DEFAULT_BUILDER_FEATURES else 'html.parser'
+        
+        try:
+            with open(hocr_file, 'r', encoding='utf-8') as f:
+                soup = BeautifulSoup(f, parser)
 
-        with open(hocr_file, 'r', encoding='utf-8') as f:
-            soup = BeautifulSoup(f, 'html.parser')
+            # 解析页面信息
+            ocr_page = soup.find('div', class_='ocr_page')
+            if ocr_page:
+                page_title = ocr_page.get('title', '')
+                m_bbox = re.search(r'bbox\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)', page_title)
+                if m_bbox:
+                    _, _, _, page_height = map(int, m_bbox.groups())
+                    if verbose:
+                        print(f"页面高度: {page_height}")
 
-        # 解析页面信息
-        ocr_page = soup.find('div', class_='ocr_page')
-        if ocr_page:
-            page_title = ocr_page.get('title', '')
-            m_bbox = re.search(r'bbox\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)', page_title)
-            if m_bbox:
-                _, _, _, page_height = map(int, m_bbox.groups())
-
-        # 遍历 `ocr_line` 级别的文本（忽略单词）
-        for line in soup.find_all('span', class_='ocr_line'):
-            try:
-                # 提取坐标
-                title = line.get('title', '')
-                bbox_match = re.search(r'bbox (\d+) (\d+) (\d+) (\d+)', title)
-                if not bbox_match:
+            # 直接处理每个单词，不依赖于行分组
+            all_words = []
+            
+            # 首先收集所有单词
+            for word in soup.find_all('span', class_='ocrx_word'):
+                try:
+                    word_title = word.get('title', '')
+                    word_bbox = re.search(r'bbox (\d+) (\d+) (\d+) (\d+)', word_title)
+                    if not word_bbox:
+                        continue
+                        
+                    word_x0, word_y0, word_x1, word_y1 = map(int, word_bbox.groups())
+                    word_text = word.get_text().strip()
+                    
+                    # 跳过空文本
+                    if not word_text:
+                        continue
+                    
+                    # 提取单词置信度
+                    word_conf_match = re.search(r'x_wconf\s+(\d+)', word_title)
+                    word_conf = int(word_conf_match.group(1)) if word_conf_match else 0
+                    
+                    # 如果置信度低于阈值，跳过
+                    if word_conf < min_confidence:
+                        continue
+                    
+                    # 计算转换后的坐标（DXF 坐标系调整）
+                    x, y, width, height = self.convert_to_dxf_coords(word_x0, word_y0, word_x1, word_y1, page_height)
+                    
+                    all_words.append({
+                        'text': word_text,
+                        'x': x,
+                        'y': y,
+                        'width': width,
+                        'height': height,
+                        'original_y0': word_y0,
+                        'original_height': word_y1 - word_y0,
+                        'confidence': word_conf
+                    })
+                    
+                except Exception as e:
+                    if verbose:
+                        print(f"解析单词失败：{e}")
+            
+            # 如果没有找到任何单词，尝试直接处理行
+            if not all_words:
+                if verbose:
+                    print("未找到单词，尝试直接处理行...")
+                for line in soup.find_all('span', class_='ocr_line'):
+                    try:
+                        # 提取坐标
+                        title = line.get('title', '')
+                        bbox_match = re.search(r'bbox (\d+) (\d+) (\d+) (\d+)', title)
+                        if not bbox_match:
+                            continue
+                        
+                        x0, y0, x1, y1 = map(int, bbox_match.groups())
+                        text = "".join(line.stripped_strings)  # 获取整行文本
+                        
+                        # 跳过空文本
+                        if not text:
+                            continue
+                        
+                        # 计算转换后的坐标（DXF 坐标系调整）
+                        x, y, width, height = self.convert_to_dxf_coords(x0, y0, x1, y1, page_height)
+                        
+                        # 直接添加到结果中
+                        text_positions.append((text, x, y, width, height))
+                        
+                    except Exception as e:
+                        if verbose:
+                            print(f"解析行失败：{e}")
+                
+                # 如果仍然没有找到任何文本，尝试解析ocr_carea
+                if not text_positions:
+                    if verbose:
+                        print("未找到行，尝试解析ocr_carea...")
+                    for area in soup.find_all('div', class_='ocr_carea'):
+                        try:
+                            # 提取坐标
+                            title = area.get('title', '')
+                            bbox_match = re.search(r'bbox (\d+) (\d+) (\d+) (\d+)', title)
+                            if not bbox_match:
+                                continue
+                            
+                            x0, y0, x1, y1 = map(int, bbox_match.groups())
+                            text = "".join(area.stripped_strings)  # 获取区域内所有文本
+                            
+                            # 跳过空文本
+                            if not text:
+                                continue
+                            
+                            # 计算转换后的坐标（DXF 坐标系调整）
+                            x, y, width, height = self.convert_to_dxf_coords(x0, y0, x1, y1, page_height)
+                            
+                            # 直接添加到结果中
+                            text_positions.append((text, x, y, width, height))
+                            
+                        except Exception as e:
+                            if verbose:
+                                print(f"解析区域失败：{e}")
+                
+                return text_positions, page_height
+            
+            # 按y坐标分组单词（使用更小的分组间隔）
+            word_groups = {}
+            for word in all_words:
+                # 使用y0作为分组键（四舍五入到最近的5像素，便于分组）
+                group_key = round(word['original_y0'] / 5) * 5
+                if group_key not in word_groups:
+                    word_groups[group_key] = []
+                word_groups[group_key].append(word)
+            
+            # 处理每个单词组
+            for group_key, words in word_groups.items():
+                # 按x坐标排序，从左到右
+                words.sort(key=lambda w: w['x'])
+                
+                # 如果只有一个单词，直接添加
+                if len(words) == 1:
+                    word = words[0]
+                    text_positions.append((word['text'], word['x'], word['y'], word['width'], word['height']))
                     continue
-
-                x0, y0, x1, y1 = map(int, bbox_match.groups())
-                text = " ".join(line.stripped_strings)  # 获取整行文本
-
-                # 计算转换后的坐标（DXF 坐标系调整）
-                x, y, width, height = self.convert_to_dxf_coords(x0, y0, x1, y1, page_height)
-
-                # 记录文本信息
-                text_positions.append((text, x, y, width, height))
-
-            except Exception as e:
-                print(f"解析行失败：{e}")
-
+                
+                # 分析同一组内的高度差异
+                heights = [word['original_height'] for word in words]
+                avg_height = sum(heights) / len(heights)
+                
+                # 检查每个单词
+                current_group = []
+                for i, word in enumerate(words):
+                    # 检查高度差异
+                    height_diff = abs(word['original_height'] - avg_height)
+                    
+                    # 如果高度差异超过阈值或置信度明显不同，单独处理
+                    if height_diff > max_height_diff:
+                        # 单独处理这个单词
+                        text_positions.append((word['text'], word['x'], word['y'], word['width'], word['height']))
+                        if verbose:
+                            print(f"检测到高度异常的单词: '{word['text']}', 高度: {word['original_height']}, 平均高度: {avg_height}")
+                    else:
+                        # 添加到当前组
+                        current_group.append(word)
+                
+                # 处理当前组内的单词（高度一致的）
+                if current_group:
+                    # 检查是否需要合并单词
+                    if len(current_group) > 1:
+                        # 检查单词是否应该合并（基于x坐标和宽度）
+                        merged_groups = self._merge_text_by_position(current_group)
+                        
+                        for merged_group in merged_groups:
+                            if len(merged_group) == 1:
+                                # 单个单词
+                                word = merged_group[0]
+                                text_positions.append((word['text'], word['x'], word['y'], word['width'], word['height']))
+                            else:
+                                # 合并单词
+                                merged_text = " ".join([w['text'] for w in merged_group])
+                                # 使用第一个单词的位置，但宽度是合并后的
+                                first = merged_group[0]
+                                last = merged_group[-1]
+                                merged_width = (last['x'] + last['width']) - first['x']
+                                text_positions.append((merged_text, first['x'], first['y'], merged_width, first['height']))
+                    else:
+                        # 只有一个单词
+                        word = current_group[0]
+                        text_positions.append((word['text'], word['x'], word['y'], word['width'], word['height']))
+        
+        except Exception as e:
+            print(f"解析hOCR文件失败: {e}")
+            if verbose:
+                import traceback
+                traceback.print_exc()
+        
+        if verbose or len(text_positions) == 0:
+            print(f"解析到 {len(text_positions)} 个文本元素")
+        
         return text_positions, page_height
+
+    def _merge_text_by_position(self, lines):
+        """
+        根据文本位置合并应该在一起的文本行
+        :param lines: 文本行列表
+        :return: 合并后的文本组列表
+        """
+        if not lines:
+            return []
+        
+        # 按x坐标排序
+        lines.sort(key=lambda l: l['x'])
+        
+        merged_groups = []
+        current_group = [lines[0]]
+        
+        for i in range(1, len(lines)):
+            current_line = lines[i]
+            previous_line = current_group[-1]
+            
+            # 计算两个文本之间的距离
+            gap = current_line['x'] - (previous_line['x'] + previous_line['width'])
+            
+            # 估计空格宽度（使用平均字符宽度的近似值）
+            avg_char_width = previous_line['width'] / max(1, len(previous_line['text']))
+            space_threshold = avg_char_width * 3  # 允许的最大间距
+            
+            # 如果间距小于阈值，认为是同一行文本
+            if gap <= space_threshold:
+                current_group.append(current_line)
+            else:
+                # 开始新的组
+                merged_groups.append(current_group)
+                current_group = [current_line]
+        
+        # 添加最后一组
+        if current_group:
+            merged_groups.append(current_group)
+        
+        return merged_groups
     
     def verify_chinese_recognition(self):
         """生成中文测试图"""

@@ -30,7 +30,6 @@ from concurrent.futures import ThreadPoolExecutor
 from func_timeout import func_timeout, FunctionTimedOut
 import shutil
 import time
-import os
 import sys
 import tempfile
 import threading
@@ -42,6 +41,8 @@ from configManager import ConfigManager
 from errors import ProcessingError, InputError, ResourceError, TimeoutError
 from util import Util
 from logManager import LogManager, setup_logging
+from shapely.validation import make_valid
+import tqdm
      
 print_lock = threading.Lock()  
 log_mgr = LogManager().get_instance()
@@ -170,33 +171,70 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         
         # === 阶段4：后处理 ===       
         log_mgr.log_info("提取多边形...")
-        polygons = dxfProcess.extract_polygons_from_dxf(str(output_dxf))
+        polygons = dxfProcess.extract_polygons_from_dxf(str(output_dxf), show_progress=True)
         log_mgr.log_processing_time("多边形提取", start_time)
         start_time = time.time()
         
          # === 阶段5：ocr整合 ===
         log_mgr.log_info("获取ocr结果...")
-        text_positions = ocr_process.parse_hocr_optimized(str(hocr_path) + ".hocr")      
+        text_positions = ocr_process.parse_hocr_optimized(str(hocr_path) + ".hocr", 
+                                                          min_confidence=70, 
+                                                          max_height_diff=10)      
         log_mgr.log_processing_time("ocr结果获取", start_time)
         start_time = time.time()
         
-         # === 阶段6：中心线分析 ===
+         # === 阶段6：生成中心线 ===
         log_mgr.log_info("生成中心线...")
         with ThreadPoolExecutor() as executor:
             multi_polygon = convert_to_multipolygon(polygons)
             if multi_polygon:                   
-                # filtered_multiPolygon = filter_polygons_by_textbbox(multi_polygon, text_positions, buffer_ratio=0.1)    
-                simplified = multi_polygon.simplify(tolerance=0.5)
+                # filtered_multiPolygon = filter_polygons_by_textbbox(multi_polygon, text_positions, buffer_ratio=0.15, show_progress=True)   
                 inter_dist = float(config_manager.get_setting('interpolation_distance', fallback=3))
-                centerlines = process_geometry_for_centerline(simplified, inter_dist)
-                simplified_centerlines = parallel_simplify(centerlines.geometry, tolerance=0.5)               
-                merged_lines = merge_lines_with_hough(simplified_centerlines, 0) 
-                filtered_lines = filter_line_by_textbbox(merged_lines, text_positions)   
+                # 确保输入几何体有效
+                if not multi_polygon.is_valid:
+                    multi_polygon = make_valid(multi_polygon)
+                
+                # 使用buffer(0)修复可能的拓扑问题
+                multi_polygon = multi_polygon.buffer(0)
+                
+                centerline = Centerline(
+                        multi_polygon,
+                        interpolation_distance=inter_dist,
+                        simplify_tolerance=0.5,                       
+                        use_multiprocessing=True,
+                        show_progress=True
+                        )            
                 log_mgr.log_processing_time("中心线生成", start_time)
-                start_time = time.time()          
-       
+                start_time = time.time()   
         
-        # === 阶段7：结果整合 ===
+        # === 阶段7：中心线分析 ===       
+        log_mgr.log_info("中心线分析...")        
+        try:
+            # 确保使用centerline的geometry属性
+            if hasattr(centerline, 'geometry'):
+                merged_lines = merge_lines_with_hough(centerline.geometry, 0)
+            else:
+                merged_lines = merge_lines_with_hough(centerline, 0)
+        except Exception as e:
+            print(f"合并线段时出错: {e}")
+            # 回退到直接使用centerline对象
+            if hasattr(centerline, 'geoms'):
+                # 如果centerline是几何集合，直接提取坐标
+                merged_lines = []
+                for geom in centerline.geoms:
+                    if hasattr(geom, 'coords'):
+                        coords = list(geom.coords)
+                        if len(coords) >= 2:
+                            merged_lines.append(coords)
+            else:
+                print("无法处理centerline对象，跳过线段合并")
+                merged_lines = []
+        
+        filtered_lines = filter_line_by_textbbox(merged_lines, text_positions)   
+        log_mgr.log_processing_time("中心线分析", start_time)
+        start_time = time.time()   
+                 
+        # === 阶段8：结果整合 ===
         log_mgr.log_info("输出结果...")
         final_output = Path(output_folder) / f"output_{base_name}.dxf"
         # shutil.copy2(output_dxf, final_output)
@@ -211,14 +249,14 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         return True, str(final_output)
             
     except InputError as e:
-        log_mgr.log_error(f"输入错误: {e}")
+        log_mgr.log_exception(f"输入错误: {e}")
     except ResourceError as e:
-        log_mgr.log_error(f"系统资源错误: {e}")
+        log_mgr.log_exception(f"系统资源错误: {e}")
         raise  # 向上传递严重错误
     except TimeoutError as e:
-        log_mgr.log_error(f"处理超时: {e}")
+        log_mgr.log_exception(f"处理超时: {e}")
     except Exception as e:
-        log_mgr.log_error(f"未处理的异常发生: {e}")
+        log_mgr.log_exception(f"未处理的异常发生: {e}")
     finally:        
         log_mgr.log_processing_time(f"{base_name} 结束", fn_start_time)
     
@@ -274,57 +312,157 @@ def multipolygon_to_txt(multipolygon, filename="output.txt"):
 def merge_lines_with_hough(lines, padding=0):
     """
     使用霍夫变换合并近似的线段，并确保结果与原始线条对齐
-    :param lines: 输入的线段列表（MultiLineString 格式）
+    :param lines: 输入的线段（MultiLineString、LineString、Centerline对象或其他几何体）
     :param padding: 图像边界扩展（默认为 0）
     :return: 合并后的线段列表
     """
-    if lines is None or not lines:
+    # 处理None或空输入
+    if lines is None:
         return []
-    if not isinstance(lines, MultiLineString):
-        raise ValueError("输入必须是 MultiLineString 类型")
+    
+    # 处理Centerline对象
+    if hasattr(lines, 'geometry'):
+        lines = lines.geometry
+    
+    # 确保输入是MultiLineString或LineString类型
+    if isinstance(lines, LineString):
+        lines = MultiLineString([lines])
+    elif not isinstance(lines, MultiLineString):
+        # 尝试从各种几何类型中提取LineString
+        try:
+            if hasattr(lines, 'geoms'):
+                # 从GeometryCollection中提取LineString
+                line_geoms = [g for g in lines.geoms if isinstance(g, LineString)]
+                if line_geoms:
+                    lines = MultiLineString(line_geoms)
+                else:
+                    # 尝试从每个几何体中提取坐标
+                    coords_list = []
+                    for geom in lines.geoms:
+                        if hasattr(geom, 'coords'):
+                            coords = list(geom.coords)
+                            if len(coords) >= 2:
+                                coords_list.append(coords)
+                    
+                    if coords_list:
+                        # 创建新的LineString对象
+                        line_geoms = [LineString(coords) for coords in coords_list]
+                        lines = MultiLineString(line_geoms)
+                    else:
+                        print("警告: 无法从输入几何体提取有效的线段")
+                        return []
+            elif hasattr(lines, 'coords'):
+                # 单个几何体，尝试提取坐标
+                coords = list(lines.coords)
+                if len(coords) >= 2:
+                    lines = MultiLineString([LineString(coords)])
+                else:
+                    print("警告: 输入几何体不包含足够的坐标点")
+                    return []
+            else:
+                # 尝试将输入转换为字符串并检查WKT格式
+                try:
+                    from shapely import wkt
+                    lines_str = str(lines)
+                    if lines_str.startswith(('LINESTRING', 'MULTILINESTRING')):
+                        geom = wkt.loads(lines_str)
+                        if isinstance(geom, LineString):
+                            lines = MultiLineString([geom])
+                        elif isinstance(geom, MultiLineString):
+                            lines = geom
+                        else:
+                            raise ValueError("WKT解析结果不是LineString或MultiLineString")
+                    else:
+                        raise ValueError("输入不是有效的WKT格式")
+                except Exception as e:
+                    print(f"尝试WKT解析失败: {e}")
+                    # 最后的尝试：检查是否有__geo_interface__属性
+                    if hasattr(lines, '__geo_interface__'):
+                        from shapely.geometry import shape
+                        try:
+                            geom = shape(lines.__geo_interface__)
+                            if isinstance(geom, LineString):
+                                lines = MultiLineString([geom])
+                            elif isinstance(geom, MultiLineString):
+                                lines = geom
+                            else:
+                                raise ValueError("__geo_interface__转换结果不是LineString或MultiLineString")
+                        except Exception as e2:
+                            print(f"尝试__geo_interface__转换失败: {e2}")
+                            raise ValueError("输入无法转换为MultiLineString或LineString类型")
+                    else:
+                        # 打印更多调试信息
+                        print(f"输入类型: {type(lines)}")
+                        print(f"输入属性: {dir(lines)}")
+                        raise ValueError("输入必须是MultiLineString或LineString类型，或可转换为这些类型的对象")
+        except Exception as e:
+            print(f"处理输入几何体时出错: {e}")
+            # 尝试直接访问centerline对象的内部结构
+            if hasattr(lines, '_centerline') and lines._centerline is not None:
+                return merge_lines_with_hough(lines._centerline, padding)
+            elif hasattr(lines, 'centerline') and lines.centerline is not None:
+                return merge_lines_with_hough(lines.centerline, padding)
+            else:
+                print(f"无法处理的输入类型: {type(lines)}")
+                return []
+    
+    # 如果是空的MultiLineString，直接返回空列表
+    if len(lines.geoms) == 0:
+        return []
 
     # 计算输入线段的边界范围
     min_x, min_y, max_x, max_y = lines.bounds
 
     # 动态调整图像大小并添加 padding
-    width = int(max_x - min_x + 2 * padding)
-    height = int(max_y - min_y + 2 * padding)
+    width = int(max_x - min_x + 2 * padding) + 1  # 加1确保至少有1个像素
+    height = int(max_y - min_y + 2 * padding) + 1
+    
+    # 确保图像尺寸合理
+    if width <= 0 or height <= 0 or width > 10000 or height > 10000:
+        print(f"警告: 图像尺寸异常 ({width}x{height})，使用默认尺寸")
+        width = max(1, min(width, 10000))
+        height = max(1, min(height, 10000))
+    
     img = np.zeros((height, width), dtype=np.uint8)
 
     # 将实际坐标映射到图像坐标
     points = []
     for line in lines.geoms:
-        for start, end in zip(line.coords[:-1], line.coords[1:]):
-            start_mapped = (int(start[0] - min_x + padding), int(start[1] - min_y + padding))
-            end_mapped = (int(end[0] - min_x + padding), int(end[1] - min_y + padding))
-            points.append([start_mapped[0], start_mapped[1], end_mapped[0], end_mapped[1]])
-            # 在图像上绘制线段
-            cv2.line(img, start_mapped, end_mapped, 255, 1)
+        coords = list(line.coords)
+        if len(coords) < 2:
+            continue  # 跳过无效线段
             
-    # 检查输入图像通道数
-    if len(img.shape) == 2 or img.shape[2] == 1:
-        # 图像已经是灰度图，无需转换
-        gray = img
-    else:
-        # 图像是彩色图，转换为灰度图
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # 高斯模糊
-    blurred = cv2.GaussianBlur(gray, ksize=(5, 5), sigmaX=0)
-
-    # 二值化
-    _, binary = cv2.threshold(blurred, thresh=127, maxval=255, type=cv2.THRESH_BINARY)
-
-    # 边缘检测
-    edges = cv2.Canny(binary, 50, 150, apertureSize=3)
-    # 使用霍夫变换检测线段
-    lines_detected = cv2.HoughLinesP(
-        img,
-        rho=1,                          # 距离分辨率
-        theta=np.pi / 180,              # 角度分辨率
-        threshold=20,                   # 累加器阈值
-        minLineLength=10,               # 线段的最小长度
-        maxLineGap=20                   # 线段之间的最大间隔
-    )
+        for start, end in zip(coords[:-1], coords[1:]):
+            try:
+                start_mapped = (int(start[0] - min_x + padding), int(start[1] - min_y + padding))
+                end_mapped = (int(end[0] - min_x + padding), int(end[1] - min_y + padding))
+                
+                # 确保坐标在图像范围内
+                if (0 <= start_mapped[0] < width and 0 <= start_mapped[1] < height and
+                    0 <= end_mapped[0] < width and 0 <= end_mapped[1] < height):
+                    points.append([start_mapped[0], start_mapped[1], end_mapped[0], end_mapped[1]])
+                    # 在图像上绘制线段
+                    cv2.line(img, start_mapped, end_mapped, 255, 1)
+            except Exception as e:
+                print(f"绘制线段时出错: {e}")
+    
+    # 如果没有有效点，返回空列表
+    if not points:
+        return []
+    
+    try:
+        # 使用霍夫变换检测线段
+        lines_detected = cv2.HoughLinesP(
+            img,
+            rho=1,                          # 距离分辨率
+            theta=np.pi / 180,              # 角度分辨率
+            threshold=20,                   # 累加器阈值
+            minLineLength=10,               # 线段的最小长度
+            maxLineGap=20                   # 线段之间的最大间隔
+        )
+    except Exception as e:
+        print(f"霍夫变换检测失败: {e}")
+        return []
 
     # 将检测到的线段映射回实际坐标
     merged_lines = []
@@ -338,7 +476,7 @@ def merge_lines_with_hough(lines, padding=0):
             y2_actual = y2 + min_y - padding
             merged_lines.append([(x1_actual, y1_actual), (x2_actual, y2_actual)])
 
-    return merged_lines  
+    return merged_lines
 
 def is_line_intersect_bbox(x1, y1, x2, y2, bbox):
     """判断线段 (x1, y1, x2, y2) 是否与 bbox 相交"""
@@ -352,7 +490,7 @@ def filter_line_by_textbbox(merged_lines, text_data):
         return []
     text_index = index.Index()
     text_bboxes = {}
-
+    
     words, page_height = text_data   
     # 添加文本（优先使用行级文本）
     for i, (text, x, y, width, height) in enumerate(words):
@@ -385,45 +523,138 @@ def filter_line_by_textbbox(merged_lines, text_data):
             
     return filtered_centerlines    
 
-def filter_polygons_by_textbbox(multi_polygon, text_data, buffer_ratio=0.1) -> MultiPolygon:
+def filter_polygons_by_textbbox(multi_polygon, text_data, buffer_ratio=0.1, show_progress=True) -> MultiPolygon:
     """
-    使用包含检测并扩展文本区域的多边形过滤
+    过滤掉与文本区域重叠的多边形
     :param multi_polygon: 输入的多边形集合（MultiPolygon）
     :param text_data: OCR识别结果 (words, page_height)
     :param buffer_ratio: 文本区域扩展比例（基于原始尺寸）
+    :param show_progress: 是否显示进度条
     :return: 过滤后的MultiPolygon
     """
     if not isinstance(multi_polygon, MultiPolygon):
         raise ValueError("输入必须是MultiPolygon类型")
-
-    # 准备带缓冲的文本区域索引
-    text_index = index.Index()
-    text_geoms = []
+        
+    # 如果没有文本数据，直接返回原始多边形
     words, page_height = text_data
+    if not words:
+        return multi_polygon
+
+    # 显示文本处理进度
+    if show_progress:
+        print(f"处理 {len(words)} 个文本区域...")
+        
+    # 创建所有文本区域的并集
+    text_polygons = []
     
-    # 构建带缓冲的文本区域
-    for i, (text, x, y, w, h) in enumerate(words):
+    # 使用tqdm显示文本处理进度
+    text_iter = tqdm.tqdm(words, desc="创建文本区域", disable=not show_progress)
+    for text, x, y, w, h in text_iter:
         # 计算动态缓冲尺寸（基于文本区域大小）
         buffer_size = max(w, h) * buffer_ratio
-        buffered_bbox = box(
+        
+        # 创建文本边界框
+        text_box = box(
             x - buffer_size,
             y - buffer_size,
             x + w + buffer_size,
             y + h + buffer_size
         )
-        text_geoms.append(prep(buffered_bbox))
-        text_index.insert(i, buffered_bbox.bounds)
-
-    poly_geoms = list(multi_polygon.geoms)
-
-    def check_polygon(polygon):
-        return polygon, any(polygon.intersects(text) for text in text_geoms)
-
-    with ThreadPoolExecutor() as executor:
-        futures = [executor.submit(check_polygon, poly) for poly in poly_geoms]
-        filtered_polygons = [f.result()[0] for f in as_completed(futures) if not f.result()[1]]
-
-    return MultiPolygon(filtered_polygons)
+        text_polygons.append(text_box)
+    
+    # 合并所有文本区域为一个几何体
+    if not text_polygons:
+        return multi_polygon
+        
+    try:
+        if show_progress:
+            print("合并文本区域...")
+            
+        # 使用unary_union合并所有文本区域
+        text_union = unary_union(text_polygons)
+        
+        # 确保结果是有效的
+        if not text_union.is_valid:
+            if show_progress:
+                print("修复文本区域几何体...")
+            text_union = text_union.buffer(0)
+            
+        # 准备输入多边形
+        poly_geoms = list(multi_polygon.geoms)
+        
+        if show_progress:
+            print(f"处理 {len(poly_geoms)} 个多边形...")
+            
+        filtered_polygons = []
+        
+        # 定义检查函数
+        def check_polygon(polygon):
+            try:
+                # 检查多边形是否与文本区域相交
+                if polygon.intersects(text_union):
+                    # 如果相交，计算差集（从多边形中减去文本区域）
+                    difference = polygon.difference(text_union)
+                    
+                    # 如果差集为空，则完全排除此多边形
+                    if difference.is_empty:
+                        return None
+                        
+                    # 如果差集是多边形或多多边形，返回它
+                    if isinstance(difference, (Polygon, MultiPolygon)):
+                        return difference
+                    
+                    # 处理GeometryCollection情况
+                    if hasattr(difference, 'geoms'):
+                        # 提取所有多边形
+                        polygons = [g for g in difference.geoms if isinstance(g, Polygon)]
+                        if polygons:
+                            return MultiPolygon(polygons)
+                        return None
+                    
+                    return None
+                else:
+                    # 如果不相交，保留原始多边形
+                    return polygon
+            except Exception as e:
+                print(f"处理多边形时出错: {e}")
+                # 出错时保留原始多边形
+                return polygon
+        
+        # 并行处理所有多边形，带进度条
+        with ThreadPoolExecutor() as executor:
+            # 创建future列表
+            futures = [executor.submit(check_polygon, poly) for poly in poly_geoms]
+            
+            # 使用tqdm显示处理进度
+            results = []
+            for f in tqdm.tqdm(as_completed(futures), total=len(futures), 
+                              desc="过滤多边形", disable=not show_progress):
+                results.append(f.result())
+            
+        # 过滤掉None结果并处理返回的几何体
+        for result in results:
+            if result is None:
+                continue
+                
+            if isinstance(result, Polygon):
+                filtered_polygons.append(result)
+            elif isinstance(result, MultiPolygon):
+                filtered_polygons.extend(list(result.geoms))
+        
+        if show_progress:
+            print(f"过滤后剩余 {len(filtered_polygons)} 个多边形")
+            
+        # 如果没有剩余多边形，返回空的MultiPolygon
+        if not filtered_polygons:
+            return MultiPolygon([])
+            
+        # 返回过滤后的MultiPolygon
+        return MultiPolygon(filtered_polygons)
+        
+    except Exception as e:
+        print(f"过滤多边形时出错: {e}")
+        # 出错时返回原始多边形
+        return multi_polygon
         
 # 使用 Potrace 转换 PBM 为 dxf
 def convert_pbm_to_dxf(pbm_path, dxf_path):   
@@ -544,6 +775,8 @@ def _process_pdf_page(page, page_num, output_dir, dpi):
     try:         
         pix = page.get_pixmap(matrix=fitz.Matrix(dpi/72, dpi/72), colorspace=fitz.csRGB, alpha=False)
         image_path = os.path.join(output_dir, f"pdf_page_{page_num + 1}.png")
+        if hasattr(pix, "set_dpi"):
+            pix.set_dpi(dpi, dpi)
         pix.save(image_path)
         with print_lock:
             print(f"Saved: {image_path}")    
@@ -560,9 +793,8 @@ def pdf_to_images(pdf_path, output_dir=None, dpi=None):
     pdf_Dir = os.path.abspath(pdf_path)
     dir = os.path.dirname(pdf_Dir)
 
-    if output_dir is None:
-        pdf_name = Path(pdf_path).stem.replace(" ", "_")
-        output_dir = os.path.join(dir, pdf_name)
+    if output_dir is None:      
+        output_dir = default_output_path(pdf_path, 'pdf_images')
 
      # 从配置获取参数 
     config_manager.apply_security_settings()    
@@ -601,7 +833,7 @@ def png_to_dxf(input_path, output_folder=None):
     if os.path.isdir(input_path):
         # 如果没有指定输出文件夹，则默认创建 output_svg 文件夹
         if output_folder is None:
-            output_folder = os.path.join(input_path, "output")
+            output_folder = os.path.join(input_path, "cad_output")
         
         # 如果输出文件夹不存在，则创建它
         if not os.path.exists(output_folder):
@@ -613,7 +845,7 @@ def png_to_dxf(input_path, output_folder=None):
     elif os.path.isfile(input_path) and Util.has_valid_files(input_path, allowed_ext):
         # 如果没有指定输出文件夹，则使用输入文件的目录
         if output_folder is None:
-            output_folder = os.path.dirname(input_path)
+            output_folder = default_output_path(input_path, 'cad_output')
         
         # 确保输出文件夹存在
         if not os.path.exists(output_folder):
@@ -733,7 +965,8 @@ def validate_input_path(args, allowed_ext):
 def default_output_path(input_path, suffix):
     """生成默认输出路径"""
     base_dir = os.path.dirname(input_path)
-    return os.path.join(base_dir, f"{Path(input_path).stem}_{suffix}")
+    file_name = Path(input_path).stem.replace(" ", "_")
+    return os.path.join(base_dir, f"{file_name}_{suffix}")
 
 def check_system_requirements():
     """系统环境检查"""

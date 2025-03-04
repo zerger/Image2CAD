@@ -30,17 +30,38 @@ class Centerline:
         :py:class:`shapely.geometry.MultiPolygon`
     """
 
-    def __init__(self, input_geometry, interpolation_distance=0.5, **attributes):
+    def __init__(self, input_geometry, interpolation_distance=0.5, simplify_tolerance=None, 
+             use_multiprocessing=False, show_progress=True, **attributes):
+        """
+        初始化Centerline对象
+        :param input_geometry: 输入几何体
+        :param interpolation_distance: 插值距离
+        :param simplify_tolerance: 简化公差       
+        :param use_multiprocessing: 是否使用多进程
+        :param show_progress: 是否显示进度条
+        :param attributes: 其他属性
+        """
         self._input_geometry = input_geometry
-        self._interpolation_distance = abs(interpolation_distance)      
+        self._interpolation_distance = abs(interpolation_distance)
+        self._simplify_tolerance = simplify_tolerance     
+        self._use_multiprocessing = use_multiprocessing
+        self._show_progress = show_progress
+        
+        if show_progress:
+            print("初始化中心线计算...")   
 
         if not self.input_geometry_is_valid():
-            raise exceptions.InvalidInputTypeError
-        # 简化多边形      
+            raise exceptions.InvalidInputTypeError   
+            
         self._min_x, self._min_y = self._get_reduced_coordinates()
         self.assign_attributes_to_instance(attributes)
 
-        self.geometry = MultiLineString(lines=self._construct_centerline())
+        if show_progress:
+            print("构建中心线...")
+        self.geometry = self._construct_centerline()
+        
+        if show_progress:
+            print("中心线计算完成")    
          
     def input_geometry_is_valid(self):
         """Input geometry is of a :py:class:`shapely.geometry.Polygon`
@@ -71,28 +92,56 @@ class Centerline:
             setattr(self, key, attributes.get(key))    
 
     def _construct_centerline(self):
+        """构建中心线"""
+        if hasattr(self, '_show_progress') and self._show_progress:
+            print("计算Voronoi图...")
+
         vertices, ridges = self._get_voronoi_vertices_and_ridges()
         linestrings = []
-        
+
+        if hasattr(self, '_show_progress') and self._show_progress:
+            print(f"处理 {len(ridges)} 条Voronoi边...")
+
         # 设置最大并发数为 CPU 核心数的一半
         max_workers = max(1, os.cpu_count() // 2)
         # 并行处理每个 ridge
         with ThreadPoolExecutor(max_workers) as executor:
             futures = [executor.submit(self._process_ridge, ridge, vertices) for ridge in ridges]
-            for future in as_completed(futures):
-                linestring = future.result()
-                if linestring is not None:
-                    linestrings.append(linestring)
+
+            # 使用tqdm显示处理进度
+            if hasattr(self, '_show_progress') and self._show_progress:
+                import tqdm
+                for future in tqdm.tqdm(as_completed(futures), total=len(futures), desc="处理Voronoi边"):
+                    linestring = future.result()
+                    if linestring is not None:
+                        linestrings.append(linestring)
+            else:
+                for future in as_completed(futures):
+                    linestring = future.result()
+                    if linestring is not None:
+                        linestrings.append(linestring)
+
+        if hasattr(self, '_show_progress') and self._show_progress:
+            print(f"生成了 {len(linestrings)} 条线段，筛选包含在几何体内的线段...")
 
         str_tree = STRtree(linestrings)
         linestrings_indexes = str_tree.query(
             self._input_geometry, predicate="contains"
         )
         contained_linestrings = [linestrings[i] for i in linestrings_indexes]
+
+        if hasattr(self, '_show_progress') and self._show_progress:
+            print(f"找到 {len(contained_linestrings)} 条包含在几何体内的线段")
+
         if len(contained_linestrings) < 2:
+            if hasattr(self, '_show_progress') and self._show_progress:
+                print("警告: 找到的线段数量过少，可能无法生成有效的中心线")
             raise exceptions.TooFewRidgesError
 
-        return unary_union(contained_linestrings)  
+        if hasattr(self, '_show_progress') and self._show_progress:
+            print("合并线段...")
+
+        return unary_union(contained_linestrings)
     
     def _process_ridge(self, ridge, vertices):
         """处理单个 ridge"""

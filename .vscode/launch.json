@@ -8,9 +8,9 @@
         "program": "${workspaceFolder}/src/Image2CAD.py",
         "args": [
             "pdf2images",
-            "D:/Image2CADPy/TestData/11-默认图名-K2-A1.pdf",
-            "D:/Image2CADPy/TestData/pdfImages/",
-            "--dpi=400"
+            "D:/Image2CADPy/TestData/00 P2184 Combination.pdf",
+            "",
+            "--dpi=200"
         ],
         "console": "integratedTerminal",        
     },
@@ -21,8 +21,8 @@
         "program": "${workspaceFolder}/src/Image2CAD.py",
         "args": [
             "png2dxf",
-            "D:/Image2CADPy/TestData/pdfImages/page_1.png",
-            "D:/Image2CADPy/TestData/pdfImages/output/",            
+            "D:/Image2CADPy/TestData/pdfImages/pdf_page_1.png",
+            "",            
         ],
         "console": "integratedTerminal"       
     },

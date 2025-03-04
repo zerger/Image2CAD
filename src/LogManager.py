@@ -4,6 +4,7 @@ from logging.handlers import RotatingFileHandler
 from threading import Lock
 import sys
 import time
+import traceback
 
 class LogManager:
     _instance = None
@@ -59,6 +60,15 @@ class LogManager:
             '%(asctime)s [%(levelname)s] %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
+    
+    def log_exception(self, e):
+         # 获取当前函数名称
+        func_name = sys._getframe().f_code.co_name
+        # 获取详细的调用栈信息
+        tb_info = traceback.format_exc()
+        # 输出异常信息，包括函数名称和调用栈
+        # self.log_error(f"Exception in function '{func_name}': {e}")
+        self.log_error(f"Traceback:\n{tb_info}")
     
     def log_error(self, message, print_console=False):
         """记录错误并可选打印到控制台"""
