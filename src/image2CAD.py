@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
-import fitz  # PyMuPDF
+import pymupdf
 import argparse
 import subprocess
 import cv2
@@ -26,12 +26,12 @@ import tempfile
 from functools import wraps
 from pathlib import Path
 from typing import Optional, Tuple
+from PIL import Image, ImageEnhance
 from concurrent.futures import ThreadPoolExecutor
 from func_timeout import func_timeout, FunctionTimedOut
 import shutil
 import time
 import sys
-import tempfile
 import threading
 import ocrProcess
 from Centerline.geometry import Centerline
@@ -42,8 +42,7 @@ from errors import ProcessingError, InputError, ResourceError, TimeoutError
 from util import Util
 from logManager import LogManager, setup_logging
 from shapely.validation import make_valid
-import tqdm
-     
+import tqdm     
 print_lock = threading.Lock()  
 log_mgr = LogManager().get_instance()
 config_manager = ConfigManager.get_instance()
@@ -147,12 +146,12 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         # === 阶段3：创建临时工作区 ===
         # with tempfile.TemporaryDirectory(prefix="img2cad_") as tmp_dir:
         start_time = time.time()
-        # OCR处理
-        hocr_path = Path(output_folder) / f"{base_name}_ocr"
+        # OCR处理       
         log_mgr.log_info("执行OCR处理...")
         ocr_process = OCRProcess()
         # ocr_process.verify_chinese_recognition()  
-        ocr_process.get_text_hocr(input_path, str(hocr_path))
+        ocr_process.get_ocr_result_paddle(input_path)
+        text_positions = ocr_process.get_ocr_result_tesseract(input_path, output_folder, min_confidence=70, max_height_diff=10)
         log_mgr.log_processing_time("OCR处理", start_time)
         start_time = time.time()
         
@@ -173,17 +172,9 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         log_mgr.log_info("提取多边形...")
         polygons = dxfProcess.extract_polygons_from_dxf(str(output_dxf), show_progress=True)
         log_mgr.log_processing_time("多边形提取", start_time)
-        start_time = time.time()
+        start_time = time.time()     
         
-         # === 阶段5：ocr整合 ===
-        log_mgr.log_info("获取ocr结果...")
-        text_positions = ocr_process.parse_hocr_optimized(str(hocr_path) + ".hocr", 
-                                                          min_confidence=70, 
-                                                          max_height_diff=10)      
-        log_mgr.log_processing_time("ocr结果获取", start_time)
-        start_time = time.time()
-        
-         # === 阶段6：生成中心线 ===
+         # === 阶段5：生成中心线 ===
         log_mgr.log_info("生成中心线...")
         with ThreadPoolExecutor() as executor:
             multi_polygon = convert_to_multipolygon(polygons)
@@ -207,7 +198,7 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
                 log_mgr.log_processing_time("中心线生成", start_time)
                 start_time = time.time()   
         
-        # === 阶段7：中心线分析 ===       
+        # === 阶段6：中心线分析 ===       
         log_mgr.log_info("中心线分析...")        
         try:
             # 确保使用centerline的geometry属性
@@ -234,7 +225,7 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         log_mgr.log_processing_time("中心线分析", start_time)
         start_time = time.time()   
                  
-        # === 阶段8：结果整合 ===
+        # === 阶段7：结果整合 ===
         log_mgr.log_info("输出结果...")
         final_output = Path(output_folder) / f"output_{base_name}.dxf"
         # shutil.copy2(output_dxf, final_output)
@@ -772,12 +763,12 @@ def remove_paths_in_text_area(svg_file, text_positions):
  
 def _process_pdf_page(page, page_num, output_dir, dpi):
     """ 处理单个 PDF 页面并保存为 PNG """
-    try:         
-        pix = page.get_pixmap(matrix=fitz.Matrix(dpi/72, dpi/72), colorspace=fitz.csRGB, alpha=False)
+    try:        
+        matrix = pymupdf.Matrix(dpi/72, dpi/72)  # 高DPI矩阵 
+        pix = page.get_pixmap(matrix=matrix, colorspace=pymupdf.csGRAY, alpha=False)  # 使用灰度颜色空间   
         image_path = os.path.join(output_dir, f"pdf_page_{page_num + 1}.png")
-        if hasattr(pix, "set_dpi"):
-            pix.set_dpi(dpi, dpi)
         pix.save(image_path)
+              
         with print_lock:
             print(f"Saved: {image_path}")    
     except Exception as e:
@@ -787,7 +778,7 @@ def _process_pdf_page(page, page_num, output_dir, dpi):
 def pdf_to_images(pdf_path, output_dir=None, dpi=None):
     """ 并行转换 PDF 为图像 """
     try:
-        import fitz  # 延迟导入减少依赖
+        import pymupdf  # 延迟导入减少依赖
     except ImportError:
         raise RuntimeError("PDF处理需要PyMuPDF: pip install pymupdf")
     pdf_Dir = os.path.abspath(pdf_path)
@@ -811,7 +802,7 @@ def pdf_to_images(pdf_path, output_dir=None, dpi=None):
     log_mgr.log_info(f"├─ 解析精度：{dpi} DPI")
 
     try:
-        doc = fitz.open(pdf_path)
+        doc = pymupdf.open(pdf_path)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(_process_pdf_page, doc[page_num], page_num, output_dir, dpi)
                        for page_num in range(len(doc))]
@@ -855,6 +846,64 @@ def png_to_dxf(input_path, output_folder=None):
         process_single_file(input_path, output_folder)
     else:
         raise ValueError(f"Invalid input path: {input_path}. Must be a .png file or a folder containing .png files.")
+    
+def ocr_process(input_path, output_folder=None):
+    """
+    安全处理单个文件的全流程
+    
+    :param input_path: 输入文件路径
+    :param output_folder: 输出目录
+    :return: (是否成功, 输出文件路径)
+    """
+    fn_start_time = time.time()  
+    
+    setup_logging(console=True)
+    dxfProcess.setup_dxf_logging()
+    try:
+        log_mgr.log_info(f"开始处理文件: {input_path}")
+        validate_input_file(input_path)
+        check_system_resources()                
+       
+        os.makedirs(output_folder, exist_ok=True)
+        if not os.access(output_folder, os.W_OK):
+            raise PermissionError(f"输出目录不可写: {output_folder}")
+            
+        base_name = Path(input_path).stem
+        output_dxf = Path(output_folder) / f"{base_name}.dxf"        
+      
+        start_time = time.time()
+        # OCR处理       
+        log_mgr.log_info("执行OCR处理...")
+        ocr_process = OCRProcess()       
+        text_positions1 = ocr_process.get_ocr_result_paddle(input_path)
+        text_positions2 = ocr_process.get_ocr_result_tesseract(input_path, output_folder, min_confidence=70, max_height_diff=10)
+        log_mgr.log_processing_time("OCR处理", start_time)
+        start_time = time.time()      
+       
+        # === 结果整合 ===
+        log_mgr.log_info("输出结果...")
+        final_output1 = Path(output_folder) / f"output_{base_name}_1.dxf"    
+        final_output2 = Path(output_folder) / f"output_{base_name}_2.dxf"              
+        dxfProcess.save_to_dxf(str(final_output1), [], text_positions1, input_path)
+        dxfProcess.save_to_dxf(str(final_output2), [], text_positions2, input_path)
+        log_mgr.log_processing_time("结果输出", start_time)
+        start_time = time.time()
+        
+        log_mgr.log_info(f"成功处理文件: {input_path}")
+        log_mgr.log_info(f"结果输出文件: {final_output1}")
+        
+        return True, str(final_output1)           
+    except InputError as e:
+        log_mgr.log_exception(f"输入错误: {e}")
+    except ResourceError as e:
+        log_mgr.log_exception(f"系统资源错误: {e}")
+        raise  # 向上传递严重错误
+    except TimeoutError as e:
+        log_mgr.log_exception(f"处理超时: {e}")
+    except Exception as e:
+        log_mgr.log_exception(f"未处理的异常发生: {e}")
+    finally:        
+        log_mgr.log_processing_time(f"{base_name} 结束", fn_start_time)
     
 def process_files_in_parallel(input_path, output_folder, max_processes=None):
     # 获取所有文件
@@ -1000,10 +1049,11 @@ def main():
     
     # 主命令参数
     parser.add_argument('action', 
-                        choices=['pdf2images', 'png2dxf', 'set-tesseract', 'set-potrace', 'check-env'],
+                        choices=['pdf2images', 'png2dxf', 'ocrProcess', 'set-tesseract', 'set-potrace', 'check-env'],
                         help="""操作选项:
     pdf2images   : 将PDF转换为PNG图像
     png2dxf      : 转换PNG图像为CAD格式
+    ocrProcess   : 图片OCR识别
     set-tesseract: 设置Tesseract OCR路径
     set-potrace  : 设置Potrace矢量转换路径
     check-env    : 检查运行环境配置""")
@@ -1037,7 +1087,7 @@ def main():
         setup_logging()  # 初始化日志
         
         # 参数验证
-        if args.action in ['pdf2images', 'png2dxf'] and not args.input_path:
+        if args.action in ['pdf2images', 'png2dxf', 'ocrProcess'] and not args.input_path:
             raise InputError("必须指定输入路径")
             
         if args.action == 'set-tesseract' and not args.input_path:
@@ -1055,11 +1105,13 @@ def main():
             output_dir = args.output_path or default_output_path(args.input_path, 'pdf_images')
             pdf_to_images(args.input_path, output_dir, args.dpi)
             
-        elif args.action == 'png2dxf':
+        elif args.action == 'png2dxf' or args.action == 'ocrProcess':
             validate_input_path(args, ['.png', '.jpg', '.jpeg'])
             output_dir = args.output_path or default_output_path(args.input_path, 'cad_output')
-            png_to_dxf(args.input_path, output_dir)
-            
+            if args.action == 'png2dxf':
+                png_to_dxf(args.input_path, output_dir)
+            elif args.action == 'ocrProcess':
+                ocr_process(args.input_path, output_dir)
         elif args.action == 'set-tesseract':
             config_manager.set_tesseract_path(args.input_path)
             log_mgr.log_info(f"Tesseract路径已设置为: {config_manager.get_tesseract_path()}")

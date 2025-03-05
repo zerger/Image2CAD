@@ -8,9 +8,9 @@
         "program": "${workspaceFolder}/src/Image2CAD.py",
         "args": [
             "pdf2images",
-            "D:/Image2CADPy/TestData/00 P2184 Combination.pdf",
+            "D:/Image2CADPy/TestData/11-默认图名-K2-A1.pdf",
             "",
-            "--dpi=200"
+            "--dpi=800"
         ],
         "console": "integratedTerminal",        
     },
@@ -21,7 +21,19 @@
         "program": "${workspaceFolder}/src/Image2CAD.py",
         "args": [
             "png2dxf",
-            "D:/Image2CADPy/TestData/pdfImages/pdf_page_1.png",
+            "D:/Image2CADPy/TestData/00_P2184_Combination_pdf_images/pdf_page_1.png",
+            "",            
+        ],
+        "console": "integratedTerminal"       
+    },
+    {
+        "name": "图片OCR",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/src/Image2CAD.py",
+        "args": [
+            "ocrProcess",
+            "D:/Image2CADPy/TestData/11-默认图名-K2-A1_pdf_images/pdf_page_1.png",
             "",            
         ],
         "console": "integratedTerminal"       

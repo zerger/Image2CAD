@@ -8,6 +8,7 @@ import re
 from bs4 import BeautifulSoup
 import numpy as np
 from configManager import ConfigManager, log_mgr
+from PIL import Image
 
 
 config_manager = ConfigManager.get_instance()
@@ -62,7 +63,82 @@ class OCRProcess:
 
         # 保存处理后的图片
         cv2.imwrite(output_path, img)
+        
+    def get_ocr_result_tesseract(self, input_path, output_folder, min_confidence=70, max_height_diff=5, verbose=False):
+        """
+        获取OCR结果
+        :param input_path: 输入图片路径
+        :param output_path: 输出hOCR文件路径
+        :param min_confidence: 最小置信度阈值
+        :param max_height_diff: 同一行内允许的最大高度差异（像素）
+        :param verbose: 是否显示详细日志
+        """
+        base_name = Path(input_path).stem
+        hocr_path = Path(output_folder) / f"{base_name}_ocr"
+        self.get_text_hocr(input_path, str(hocr_path))
+        text_positions = self.parse_hocr_optimized(str(hocr_path) + ".hocr",  min_confidence, max_height_diff, verbose)      
+        return text_positions
     
+    def get_ocr_result_paddle(self, input_image_path):
+        try:
+            from paddleocr import PaddleOCR, draw_ocr  
+        except ImportError:
+            raise RuntimeError("PaddleOCR未安装，请先安装PaddleOCR")
+        
+        # 获取当前文件所在目录
+        base_dir = os.path.dirname(__file__)
+        
+        # 构建模型路径
+        # det_model_dir = os.path.join(base_dir, 'ch_PP-OCRv3', 'ch_PP-OCRv3_det')
+        # rec_model_dir = os.path.join(base_dir, 'ch_PP-OCRv3', 'ch_PP-OCRv3_rec')
+        # cls_model_dir = os.path.join(base_dir, 'ch_PP-OCRv3', 'ch_ppocr_mobile_v2.0_cls')
+        
+        # 初始化PaddleOCR，使用中文模型
+        ocr = PaddleOCR(
+            use_angle_cls=True, 
+            lang='ch', 
+            det_db_box_thresh=0.3, 
+            det_db_unclip_ratio=1.6,
+            det_db_score_mode='slow'
+            # det_model_dir=det_model_dir, 
+            # rec_model_dir=rec_model_dir, 
+            # cls_model_dir=cls_model_dir
+        )        
+        result = ocr.ocr(input_image_path, cls=True)          
+        image = Image.open(input_image_path)
+        page_height = image.height
+        # 解析结果
+        parsed_results = self.parse_ocr_result(result[0], page_height)
+        for item in parsed_results:
+            print(item)
+        return parsed_results, page_height
+    
+    def parse_ocr_result(self, result, page_height):
+        parsed_results = []
+        for line in result:
+            # 提取文本
+            text = line[1][0]
+            
+            # 提取四点坐标
+            points = line[0]
+            x0 = min(point[0] for point in points)
+            y0 = min(point[1] for point in points)
+            x1 = max(point[0] for point in points)
+            y1 = max(point[1] for point in points)
+            
+            # 计算宽度和高度
+            width = x1 - x0
+            height = y1 - y0            
+            # 提取角度信息
+            angle = line[1][2] if len(line[1]) > 2 else 0  # 默认角度为0
+            # 转换坐标
+            x, y, width, height = self.convert_to_dxf_coords(x0, y0, x1, y1, page_height)
+            
+            # 添加到结果列表
+            parsed_results.append((text, x, y, width, height, angle))
+        
+        return parsed_results
+
     def get_text_hocr(self, input_path, output_path):
         """增强版OCR处理函数"""
         self.validate_ocr_env()
@@ -240,6 +316,7 @@ class OCRProcess:
         text_positions = []
         page_height = None
         
+        angle = 0
         # 使用更高效的lxml解析器（如果可用）
         parser = 'lxml' if 'lxml' in BeautifulSoup.DEFAULT_BUILDER_FEATURES else 'html.parser'
         
@@ -324,7 +401,7 @@ class OCRProcess:
                         x, y, width, height = self.convert_to_dxf_coords(x0, y0, x1, y1, page_height)
                         
                         # 直接添加到结果中
-                        text_positions.append((text, x, y, width, height))
+                        text_positions.append((text, x, y, width, height, angle))
                         
                     except Exception as e:
                         if verbose:
@@ -353,7 +430,7 @@ class OCRProcess:
                             x, y, width, height = self.convert_to_dxf_coords(x0, y0, x1, y1, page_height)
                             
                             # 直接添加到结果中
-                            text_positions.append((text, x, y, width, height))
+                            text_positions.append((text, x, y, width, height, angle))
                             
                         except Exception as e:
                             if verbose:
@@ -378,7 +455,7 @@ class OCRProcess:
                 # 如果只有一个单词，直接添加
                 if len(words) == 1:
                     word = words[0]
-                    text_positions.append((word['text'], word['x'], word['y'], word['width'], word['height']))
+                    text_positions.append((word['text'], word['x'], word['y'], word['width'], word['height'], angle))
                     continue
                 
                 # 分析同一组内的高度差异
@@ -394,7 +471,7 @@ class OCRProcess:
                     # 如果高度差异超过阈值或置信度明显不同，单独处理
                     if height_diff > max_height_diff:
                         # 单独处理这个单词
-                        text_positions.append((word['text'], word['x'], word['y'], word['width'], word['height']))
+                        text_positions.append((word['text'], word['x'], word['y'], word['width'], word['height'], angle))
                         if verbose:
                             print(f"检测到高度异常的单词: '{word['text']}', 高度: {word['original_height']}, 平均高度: {avg_height}")
                     else:
@@ -412,7 +489,7 @@ class OCRProcess:
                             if len(merged_group) == 1:
                                 # 单个单词
                                 word = merged_group[0]
-                                text_positions.append((word['text'], word['x'], word['y'], word['width'], word['height']))
+                                text_positions.append((word['text'], word['x'], word['y'], word['width'], word['height'], angle))
                             else:
                                 # 合并单词
                                 merged_text = " ".join([w['text'] for w in merged_group])
@@ -420,11 +497,11 @@ class OCRProcess:
                                 first = merged_group[0]
                                 last = merged_group[-1]
                                 merged_width = (last['x'] + last['width']) - first['x']
-                                text_positions.append((merged_text, first['x'], first['y'], merged_width, first['height']))
+                                text_positions.append((merged_text, first['x'], first['y'], merged_width, first['height'], angle))
                     else:
                         # 只有一个单词
                         word = current_group[0]
-                        text_positions.append((word['text'], word['x'], word['y'], word['width'], word['height']))
+                        text_positions.append((word['text'], word['x'], word['y'], word['width'], word['height'], angle))
         
         except Exception as e:
             print(f"解析hOCR文件失败: {e}")

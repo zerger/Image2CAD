@@ -202,7 +202,7 @@ class dxfProcess:
         if text_result:
             words, page_height = text_result  
             if page_height is not None and words is not None:
-                for text, x, y, width, height in words:  
+                for text, x, y, width, height, angle in words:  
                     if height <= 0:
                         continue      
                     cls.add_text(msp, text, (x, y), height, 0, layer='文本')  
