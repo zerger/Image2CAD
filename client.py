@@ -1,30 +1,45 @@
 # -*- coding: utf-8 -*-
 import requests
 import time
+import sys
 
-# 上传图片
-file_path = "test.png"
-upload_url = "http://127.0.0.1:8000/upload/"
+def upload_file(file_path, upload_url):
+    with open(file_path, "rb") as f:
+        response = requests.post(upload_url, files={"file": f})
+    return response.json()["task_id"]
 
-with open(file_path, "rb") as f:
-    response = requests.post(upload_url, files={"file": f})
+def poll_task_status(task_id):
+    while True:
+        task_status = requests.get(f"http://127.0.0.1:8000/task/{task_id}").json()
+        print(f"Task status: {task_status['status']}")
+        if task_status["status"] == "SUCCESS":
+            return
+        time.sleep(2)
 
-task_id = response.json()["task_id"]
-print(f"Task ID: {task_id}")
+def download_file(download_url, output_path):
+    response = requests.get(download_url)
+    with open(output_path, "wb") as f:
+        f.write(response.content)
+    print(f"文件已下载到 {output_path}！")
 
-# 轮询任务状态
-while True:
-    task_status = requests.get(f"http://127.0.0.1:8000/task/{task_id}").json()
-    print(f"Task status: {task_status['status']}")
-    if task_status["status"] == "SUCCESS":
-        break
-    time.sleep(2)
+if __name__ == "__main__":
+    task_type = sys.argv[1]  # 任务类型，例如 "png_to_dxf" 或 "pdf_to_images"
+    file_path = sys.argv[2]  # 上传的文件路径
 
-# 下载 DXF
-download_url = "http://127.0.0.1:8000/download/test.dxf"
-response = requests.get(download_url)
+    if task_type == "png_to_dxf":
+        upload_url = "http://127.0.0.1:8000/upload/image/"
+        download_filename = "test.dxf"
+    elif task_type == "pdf_to_images":
+        upload_url = "http://127.0.0.1:8000/upload/pdf/"
+        download_filename = "test_images.zip"
+    else:
+        print("未知的任务类型")
+        sys.exit(1)
 
-with open("test.dxf", "wb") as f:
-    f.write(response.content)
+    task_id = upload_file(file_path, upload_url)
+    print(f"Task ID: {task_id}")
 
-print("DXF 文件已下载！")
+    poll_task_status(task_id)
+
+    download_url = f"http://127.0.0.1:8000/download/{download_filename}"
+    download_file(download_url, download_filename)
