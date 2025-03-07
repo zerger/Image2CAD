@@ -2,11 +2,32 @@
 import requests
 import time
 import sys
+import websockets, asyncio
 
+async def ws_client():
+    async with websockets.connect('ws://127.0.0.1:8000/test') as ws:
+        await ws.send('this is a test')
+        response = await ws.recv()
+        print(response)
+        
 def upload_file(file_path, upload_url):
     with open(file_path, "rb") as f:
         response = requests.post(upload_url, files={"file": f})
-    return response.json()["task_id"]
+        
+        # 打印响应状态码和内容以进行调试
+        print("Response status code:", response.status_code)
+        print("Response content:", response.text)
+        
+        # 检查 HTTP 错误
+        response.raise_for_status()
+        
+        # 检查响应的内容类型是否为 JSON
+        if response.headers.get('Content-Type') == 'application/json':
+            json_response = response.json()
+            return json_response.get("task_id")
+        else:
+            print("Unexpected content type:", response.headers.get('Content-Type'))
+            raise ValueError("Expected JSON response")
 
 def poll_task_status(task_id):
     while True:
@@ -26,12 +47,18 @@ if __name__ == "__main__":
     task_type = sys.argv[1]  # 任务类型，例如 "png_to_dxf" 或 "pdf_to_images"
     file_path = sys.argv[2]  # 上传的文件路径
 
+    # 修改为服务器的实际 IP 地址
+    server_ip = "123.56.161.124"
+
     if task_type == "png_to_dxf":
-        upload_url = "http://127.0.0.1:8000/upload/image/"
+        upload_url = f"http://{server_ip}:8000/uploads/image/"
         download_filename = "test.dxf"
     elif task_type == "pdf_to_images":
-        upload_url = "http://127.0.0.1:8000/upload/pdf/"
+        upload_url = f"http://{server_ip}:8000/uploads/pdf/"
         download_filename = "test_images.zip"
+    elif task_type == "ws_client":
+        asyncio.run(ws_client())
+        sys.exit(1)
     else:
         print("未知的任务类型")
         sys.exit(1)
@@ -41,5 +68,5 @@ if __name__ == "__main__":
 
     poll_task_status(task_id)
 
-    download_url = f"http://127.0.0.1:8000/download/{download_filename}"
+    download_url = f"http://{server_ip}:8000/download/{download_filename}"
     download_file(download_url, download_filename)
