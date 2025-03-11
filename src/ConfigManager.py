@@ -134,7 +134,7 @@ class ConfigManager:
         path = self._config.get('DEFAULT', 'tesseract_path', fallback='')
         if not path:
             path = self._auto_detect_tesseract()
-        return path    
+        return self.normalize_path(path)    
   
     def set_tesseract_path(self, path: str) -> None:
         """设置Tesseract路径"""
@@ -142,13 +142,39 @@ class ConfigManager:
             raise FileNotFoundError(f"Tesseract路径无效: {path}")
         self._config['DEFAULT']['tesseract_path'] = path
         self._save_config()    
+        
+    def set_tesseract_mode(self, mode: str) -> None:
+        if mode in ["fast", "normal", "best"]:           
+            self._config['DEFAULT']['tesseract_mode'] = mode
+            self._save_config()    
+        else:
+            raise ValueError("Invalid mode. Choose from 'fast', 'normal', 'best'.")
+
+    def get_tesseract_mode(self) -> str:
+        mode = self._config.get('DEFAULT', 'tesseract_mode', fallback='')
+        if mode in ["fast", "normal", "best"]:  
+            return mode 
+        else:
+            return "normal"
+        
+    def get_tesseract_data_path(self) -> str:
+        tesseract_exe = self.get_tesseract_path()
+        tesseract_mode = self.get_tesseract_mode()
+        data_dir = Path(tesseract_exe).parent / 'tessdata'
+        if tesseract_mode == "fast":
+            data_dir = Path(tesseract_exe).parent / 'tessdata_fast'
+        elif tesseract_mode == "best":
+            data_dir = Path(tesseract_exe).parent / 'tessdata_best'
+        else:
+            data_dir = Path(tesseract_exe).parent / 'tessdata'  
+        return data_dir
   
     def get_potrace_path(self) -> str:
         """获取Potrace路径"""
         path = self._config.get('DEFAULT', 'potrace_path', fallback='')
         if not path:
             path = self._auto_detect_potrace()
-        return path
+        return self.normalize_path(path)    
     
     @staticmethod
     def _auto_detect_tesseract() -> str:
@@ -235,4 +261,14 @@ class ConfigManager:
         """保存配置到文件"""
         with open(self._config_path, 'w') as f:
             self._config.write(f)
+            
+    def normalize_path(self, path):
+        """规范化路径，去除多余的换行符和空格，并使用 os.path.normpath 进行规范化。
+        规范化路径，去除多余的换行符和空格，并使用 os.path.normpath 进行规范化。
+        """
+        # 去除换行符和空格
+        cleaned_path = path.replace('\n', '').strip()
+        # 使用 os.path.normpath 规范化路径
+        normalized_path = os.path.normpath(cleaned_path)
+        return normalized_path
     

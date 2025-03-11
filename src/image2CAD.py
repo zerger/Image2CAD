@@ -26,8 +26,7 @@ import tempfile
 from functools import wraps
 from pathlib import Path
 from typing import Optional, Tuple
-from PIL import Image, ImageEnhance
-from concurrent.futures import ThreadPoolExecutor
+from PIL import Image, ImageEnhance, ImageOps
 from func_timeout import func_timeout, FunctionTimedOut
 import shutil
 import time
@@ -150,7 +149,7 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         log_mgr.log_info("执行OCR处理...")
         ocr_process = OCRProcess()
         # ocr_process.verify_chinese_recognition()  
-        ocr_process.get_ocr_result_paddle(input_path)
+        # ocr_process.get_ocr_result_paddle(input_path)
         text_positions = ocr_process.get_ocr_result_tesseract(input_path, output_folder, min_confidence=70, max_height_diff=10)
         log_mgr.log_processing_time("OCR处理", start_time)
         start_time = time.time()
@@ -170,12 +169,14 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         
         # === 阶段4：后处理 ===       
         log_mgr.log_info("提取多边形...")
-        polygons = dxfProcess.extract_polygons_from_dxf(str(output_dxf), show_progress=True)
+        polygons = None
+        # polygons = dxfProcess.extract_polygons_from_dxf(str(output_dxf), show_progress=True)
         log_mgr.log_processing_time("多边形提取", start_time)
         start_time = time.time()     
         
          # === 阶段5：生成中心线 ===
         log_mgr.log_info("生成中心线...")
+        centerline = None
         with ThreadPoolExecutor() as executor:
             multi_polygon = convert_to_multipolygon(polygons)
             if multi_polygon:                   
@@ -714,6 +715,8 @@ def convert_to_multipolygon(polygons):
     :param polygons: 多边形坐标列表，每个多边形为 [(x1, y1), (x2, y2), ...] 的格式。
     :return: shapely.geometry.MultiPolygon 对象。
     """
+    if polygons is None:
+        return MultiPolygon([])
     valid_polygons = []
     for coords in polygons:
         try:
@@ -764,10 +767,34 @@ def remove_paths_in_text_area(svg_file, text_positions):
 def _process_pdf_page(page, page_num, output_dir, dpi):
     """ 处理单个 PDF 页面并保存为 PNG """
     try:        
+        if dpi > 1000:
+            dpi = 1000
+            print(f"dpi {dpi} 设置过高, 调整为 1000 ")           
         matrix = pymupdf.Matrix(dpi/72, dpi/72)  # 高DPI矩阵 
-        pix = page.get_pixmap(matrix=matrix, colorspace=pymupdf.csGRAY, alpha=False)  # 使用灰度颜色空间   
+        pix = page.get_pixmap(matrix=matrix, colorspace=pymupdf.csRGB, alpha=False)  # 使用灰度颜色空间   
         image_path = os.path.join(output_dir, f"pdf_page_{page_num + 1}.png")
-        pix.save(image_path)
+        #pix.save(image_path)
+        # 将图像转换为 PIL 图像
+        image = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)        
+        # # 调整图像对比度和饱和度
+        enhancer = ImageEnhance.Contrast(image)
+        image = enhancer.enhance(5)  # 增强对比度
+        enhancer = ImageEnhance.Color(image)
+        image = enhancer.enhance(1.2)  # 增强饱和度
+         # 调整图像亮度
+        brightness_enhancer = ImageEnhance.Brightness(image)
+        image = brightness_enhancer.enhance(1.5)  # 增强亮度
+        gray_image = image.convert("L")        
+        # 将 PIL 图像转换为 NumPy 数组
+        gray_np = np.array(gray_image)
+        # 使用 OpenCV 的自适应阈值
+        binary_np = cv2.adaptiveThreshold(
+            gray_np, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+        )
+        # 将 NumPy 数组转换回 PIL 图像
+        binary_image = Image.fromarray(binary_np)
+        # 保存图像
+        binary_image.save(image_path)
               
         with print_lock:
             print(f"Saved: {image_path}")    

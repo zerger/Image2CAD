@@ -8,7 +8,7 @@
         "program": "${workspaceFolder}/src/Image2CAD.py",
         "args": [
             "pdf2images",
-            "D:/Image2CADPy/TestData/11-默认图名-K2-A1.pdf",
+            "D:/Image2CADPy/TestData/11-K2-A1.pdf",
             "",
             "--dpi=800"
         ],
@@ -21,7 +21,7 @@
         "program": "${workspaceFolder}/src/Image2CAD.py",
         "args": [
             "png2dxf",
-            "D:/Image2CADPy/TestData/00_P2184_Combination_pdf_images/pdf_page_1.png",
+            "D:/Image2CADPy/TestData/11-K2-A1_pdf_images/pdf_page_1.png",
             "",            
         ],
         "console": "integratedTerminal"       
@@ -33,7 +33,7 @@
         "program": "${workspaceFolder}/src/Image2CAD.py",
         "args": [
             "ocrProcess",
-            "D:/Image2CADPy/TestData/11-默认图名-K2-A1_pdf_images/pdf_page_1.png",
+            "D:/Image2CADPy/TestData/chinese_test.png",
             "",            
         ],
         "console": "integratedTerminal"       
@@ -46,6 +46,17 @@
         "args": [
             "set-tesseract",
             "E:/Program Files/Tesseract-OCR/tesseract.exe",            
+        ],
+        "console": "integratedTerminal"       
+    },
+    {
+        "name": "服务访问",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/client.py",
+        "args": [
+            "ws_client",
+            "D:/Image2CADPy/TestData/1.png",            
         ],
         "console": "integratedTerminal"       
     },

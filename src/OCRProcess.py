@@ -18,12 +18,13 @@ class OCRProcess:
     
     def validate_ocr_env(self):
         """验证OCR环境配置"""
-        tesseract_exe = config_manager.get_tesseract_path()
+        tesseract_exe = config_manager.get_tesseract_path()        
+        data_dir = config_manager.get_tesseract_data_path()       
         checks = {
             "Tesseract路径": tesseract_exe,
             "语言包": [
-                Path(tesseract_exe).parent / 'tessdata/chi_sim.traineddata',
-                Path(tesseract_exe).parent / 'tessdata/chi_tra.traineddata'
+                data_dir / 'chi_sim.traineddata',
+                data_dir / 'chi_tra.traineddata'
             ]
         }
 
@@ -153,9 +154,10 @@ class OCRProcess:
         #wb_img = Path(img_dir) / f"{img_name}_wb.png"
         #OCRProcess.ensure_white_background(input_path, wb_img)
         
+        config_manager.set_tesseract_mode("best")
         # 获取可执行路径
         tesseract_exe = config_manager.get_tesseract_path()
-        tessdata_dir = Path(tesseract_exe).parent / 'tessdata'  # 语言包目录
+        tessdata_dir = config_manager.get_tesseract_data_path()  # 语言包目录
         
         # 添加白名单（根据中文需求调整）
         whitelist = r'0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ()<>,.+-±:/°"⌀ '
@@ -165,7 +167,7 @@ class OCRProcess:
             str(input_file),
             str(output_path),
             '-c', 'tessedit_char_whitelist=',
-            '-l', 'chi_sim',
+            '-l', 'chi_sim+chi_tra',
              # 显式指定语言包路径
             '--tessdata-dir', str(tessdata_dir),
             '--psm', '11',
@@ -492,7 +494,7 @@ class OCRProcess:
                                 text_positions.append((word['text'], word['x'], word['y'], word['width'], word['height'], angle))
                             else:
                                 # 合并单词
-                                merged_text = " ".join([w['text'] for w in merged_group])
+                                merged_text = "".join([w['text'] for w in merged_group])
                                 # 使用第一个单词的位置，但宽度是合并后的
                                 first = merged_group[0]
                                 last = merged_group[-1]
