@@ -40,8 +40,11 @@ from configManager import ConfigManager
 from errors import ProcessingError, InputError, ResourceError, TimeoutError
 from util import Util
 from logManager import LogManager, setup_logging
+from train_shx import TrainSHX_data
 from shapely.validation import make_valid
-import tqdm     
+import tqdm    
+
+ 
 print_lock = threading.Lock()  
 log_mgr = LogManager().get_instance()
 config_manager = ConfigManager.get_instance()
@@ -1040,7 +1043,7 @@ def validate_input_path(args, allowed_ext):
 
 def default_output_path(input_path, suffix):
     """生成默认输出路径"""
-    base_dir = os.path.dirname(input_path)
+    base_dir = Path(__file__).parent.parent / 'TestData'
     file_name = Path(input_path).stem.replace(" ", "_")
     return os.path.join(base_dir, f"{file_name}_{suffix}")
 
@@ -1076,7 +1079,8 @@ def main():
     
     # 主命令参数
     parser.add_argument('action', 
-                        choices=['pdf2images', 'png2dxf', 'ocrProcess', 'set-tesseract', 'set-potrace', 'check-env'],
+                        choices=['pdf2images', 'png2dxf', 'ocrprocess', 'set-tesseract', 
+                                 'set-potrace', 'check-env'],
                         help="""操作选项:
     pdf2images   : 将PDF转换为PNG图像
     png2dxf      : 转换PNG图像为CAD格式
@@ -1112,42 +1116,42 @@ def main():
     try:
         args = parser.parse_args()
         setup_logging()  # 初始化日志
-        
+        action = args.action.lower()
         # 参数验证
-        if args.action in ['pdf2images', 'png2dxf', 'ocrProcess'] and not args.input_path:
+        if action in ['pdf2images', 'png2dxf', 'ocrProcess'] and not args.input_path:
             raise InputError("必须指定输入路径")
             
-        if args.action == 'set-tesseract' and not args.input_path:
+        if action == 'set-tesseract' and not args.input_path:
             raise InputError("必须指定Tesseract路径")
             
-        if args.action == 'set-potrace' and not args.input_path:
+        if action == 'set-potrace' and not args.input_path:
             raise InputError("必须指定Potrace路径")
             
         # 加载配置文件
-        config_manager.load_config(args.config)
-        
+        config_manager.load_config(args.config)      
+      
         # 根据选择的 action 执行
-        if args.action == 'pdf2images':
+        if action == 'pdf2images':
             validate_input_path(args, ['.pdf'])
             output_dir = args.output_path or default_output_path(args.input_path, 'pdf_images')
             pdf_to_images(args.input_path, output_dir, args.dpi)
             
-        elif args.action == 'png2dxf' or args.action == 'ocrProcess':
+        elif action.lower() in {'png2dxf', 'ocrprocess'}:
             validate_input_path(args, ['.png', '.jpg', '.jpeg'])
             output_dir = args.output_path or default_output_path(args.input_path, 'cad_output')
-            if args.action == 'png2dxf':
+            if action == 'png2dxf':
                 png_to_dxf(args.input_path, output_dir)
-            elif args.action == 'ocrProcess':
-                ocr_process(args.input_path, output_dir)
-        elif args.action == 'set-tesseract':
+            elif action == 'ocrprocess':
+                ocr_process(args.input_path, output_dir)          
+        elif action == 'set-tesseract':
             config_manager.set_tesseract_path(args.input_path)
             log_mgr.log_info(f"Tesseract路径已设置为: {config_manager.get_tesseract_path()}")
             
-        elif args.action == 'set-potrace':
+        elif action == 'set-potrace':
             config_manager.set_potrace_path(args.input_path)
             log_mgr.log_info(f"Potrace路径已设置为: {config_manager.get_potrace_path()}")
             
-        elif args.action == 'check-env':
+        elif action == 'check-env':
             check_system_requirements()
             
     except argparse.ArgumentError as e:

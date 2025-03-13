@@ -61,3 +61,28 @@ class Util:
             if p.is_file() and p.suffix.lower() in extensions:
                 return True
         return False
+    
+    @staticmethod
+    def ensure_directory_exists(directory_path):
+        """
+        确保目录存在，如果不存在则创建。
+
+        :param directory_path: 目录路径
+        """
+        if not os.path.exists(directory_path):
+            os.makedirs(directory_path)
+            print(f"创建目录: {directory_path}")
+        else:
+            print(f"目录已存在: {directory_path}")
+
+    @staticmethod
+    def ensure_file_exists(file_path):
+        """
+        确保文件存在。
+
+        :param file_path: 文件路径
+        """
+        if not os.path.isfile(file_path):
+            print(f"警告: 文件 {file_path} 不存在。")
+        else:
+            print(f"文件已存在: {file_path}")    

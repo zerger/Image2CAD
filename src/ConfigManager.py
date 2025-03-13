@@ -157,18 +157,21 @@ class ConfigManager:
         else:
             return "normal"
         
-    def get_tesseract_data_path(self) -> str:
-        tesseract_exe = self.get_tesseract_path()
+    def get_tesseract_data_path(self) -> str:       
         tesseract_mode = self.get_tesseract_mode()
+        return self.set_tesseract_data_path_mode(tesseract_mode)      
+   
+    def set_tesseract_data_path_mode(self, mode) -> str:
+        tesseract_exe = self.get_tesseract_path()       
         data_dir = Path(tesseract_exe).parent / 'tessdata'
-        if tesseract_mode == "fast":
+        if mode == "fast":
             data_dir = Path(tesseract_exe).parent / 'tessdata_fast'
-        elif tesseract_mode == "best":
+        elif mode == "best":
             data_dir = Path(tesseract_exe).parent / 'tessdata_best'
         else:
             data_dir = Path(tesseract_exe).parent / 'tessdata'  
         return data_dir
-  
+    
     def get_potrace_path(self) -> str:
         """获取Potrace路径"""
         path = self._config.get('DEFAULT', 'potrace_path', fallback='')

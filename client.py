@@ -20,6 +20,7 @@ def upload_file(file_path, upload_url):
         
         # 检查 HTTP 错误
         response.raise_for_status()
+
         
         # 检查响应的内容类型是否为 JSON
         if response.headers.get('Content-Type') == 'application/json':
@@ -29,9 +30,9 @@ def upload_file(file_path, upload_url):
             print("Unexpected content type:", response.headers.get('Content-Type'))
             raise ValueError("Expected JSON response")
 
-def poll_task_status(task_id):
+def poll_task_status(server_ip, task_id):
     while True:
-        task_status = requests.get(f"http://127.0.0.1:8000/task/{task_id}").json()
+        task_status = requests.get(f"http://{server_ip}:8000/task/{task_id}").json()
         print(f"Task status: {task_status['status']}")
         if task_status["status"] == "SUCCESS":
             return
@@ -66,7 +67,7 @@ if __name__ == "__main__":
     task_id = upload_file(file_path, upload_url)
     print(f"Task ID: {task_id}")
 
-    poll_task_status(task_id)
+    poll_task_status(server_ip, task_id)
 
     download_url = f"http://{server_ip}:8000/download/{download_filename}"
     download_file(download_url, download_filename)

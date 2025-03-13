@@ -32,9 +32,31 @@
         "request": "launch",
         "program": "${workspaceFolder}/src/Image2CAD.py",
         "args": [
-            "ocrProcess",
-            "D:/Image2CADPy/TestData/chinese_test.png",
+            "ocrprocess",
+            "D:/Image2CADPy/TestData/11-K2-A1_pdf_images/pdf_page_1.png",
             "",            
+        ],
+        "console": "integratedTerminal"       
+    },
+    {
+        "name": "训练shx数据",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/src/train_shx.py",
+        "args": [
+            "train_tesseract"                    
+        ],
+        "console": "integratedTerminal"       
+    },
+    {
+        "name": "生成训练数据",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/src/train_shx.py",
+        "args": [
+            "create_training_textdata",
+            "D:/Image2CADPy/src/characterset/",
+            "D:/Image2CADPy/tesseract_train/",            
         ],
         "console": "integratedTerminal"       
     },
@@ -55,7 +77,7 @@
         "request": "launch",
         "program": "${workspaceFolder}/client.py",
         "args": [
-            "ws_client",
+            "png_to_dxf",
             "D:/Image2CADPy/TestData/1.png",            
         ],
         "console": "integratedTerminal"       
