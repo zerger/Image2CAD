@@ -31,3 +31,10 @@ copy %LANG%.traineddata "%TESSDATA_PREFIX%\"
 
 echo 训练完成！
 pause
+
+lstmtraining --model_output jpn_plusminus --continue_from jpn.lstm --old_traineddata jpn.traineddata --traineddata jpn.traineddata --train_listfile jpn.training_files.txt --debug_interval -1 --max_iterations 3600
+
+tesseract jpn.HGMaruGothicMPRO.exp0.tif num -l jpn --psm 6 lstm.train
+
+lstmtraining --model_output custom_chinese.traineddata --traineddata "%TESSDATA_PREFIX%\chi_sim.traineddata" --train_listfile train_font.lstmf --max_iterations 400
+

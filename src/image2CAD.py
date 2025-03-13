@@ -278,30 +278,6 @@ def convert_png_to_pbm(png_path, pbm_path):
             cv2.drawContours(binary_img, [contour], -1, 0, -1)
     
     cv2.imwrite(pbm_path, binary_img)   
-
-def multipolygon_to_txt(multipolygon, filename="output.txt"):
-    with open(filename, "w") as f:
-        for i, polygon in enumerate(multipolygon.geoms):
-            f.write(f"Polygon {i+1}:\n")  # 标注多边形编号
-            
-            # 处理外边界
-            if polygon.exterior:
-                f.write("  Exterior:\n")
-                for coord in polygon.exterior.coords:
-                    x, y = coord[:2]  # 兼容 2D 和 3D
-                    f.write(f"    {x}, {y}\n")
-            else:
-                f.write("  Empty Polygon\n")
-
-            # 处理内部孔洞
-            for j, interior in enumerate(polygon.interiors):
-                f.write(f"  Hole {j+1}:\n")
-                for coord in interior.coords:
-                    x, y = coord[:2]  # 兼容 2D 和 3D
-                    f.write(f"    {x}, {y}\n")
-            
-            f.write("\n")  # 分隔多边形
-    print(f"TXT 文件已保存为 {filename}")
     
 # 合并近似的线段
 def merge_lines_with_hough(lines, padding=0):

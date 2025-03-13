@@ -8,9 +8,9 @@
         "program": "${workspaceFolder}/src/Image2CAD.py",
         "args": [
             "pdf2images",
-            "D:/Image2CADPy/TestData/11-K2-A1.pdf",
+            "D:/Image2CADPy/TestData/Drawing1.pdf",
             "",
-            "--dpi=800"
+            "--dpi=300"
         ],
         "console": "integratedTerminal",        
     },
@@ -57,6 +57,18 @@
             "create_training_textdata",
             "D:/Image2CADPy/src/characterset/",
             "D:/Image2CADPy/tesseract_train/",            
+        ],
+        "console": "integratedTerminal"       
+    },
+    {
+        "name": "dxf导出txt",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/src/dxfprocess.py",
+        "args": [
+            "export_dxf_to_txt",
+            "D:/Image2CADPy/TestData/4.dxf",
+            "D:/Image2CADPy/TestData/4_dxf_output.txt",            
         ],
         "console": "integratedTerminal"       
     },

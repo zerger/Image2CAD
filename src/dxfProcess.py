@@ -7,6 +7,7 @@ from ezdxf.enums import TextEntityAlignment
 from matplotlib.font_manager import findfont, FontProperties
 from shapely.validation import make_valid
 import platform
+import argparse
 from lxml import etree
 from typing import Tuple
 import xml.etree.ElementTree as ET
@@ -209,6 +210,55 @@ class dxfProcess:
 
         # 保存修改后的 DXF 文件
         doc.saveas(dxf_file)  
+    
+
+    @staticmethod
+    def multipolygon_to_txt(multipolygon, filename="output.txt"):
+        with open(filename, "w") as f:
+            # multipolygon 是从 extract_polygons_from_dxf 返回的点列表
+            for i, poly in enumerate(multipolygon):
+                if isinstance(poly, (Polygon, MultiPolygon)):
+                    # 处理 Polygon 或 MultiPolygon 对象
+                    if isinstance(poly, MultiPolygon):
+                        for j, polygon in enumerate(poly.geoms):
+                            f.write(f"Polygon {i+1}-{j+1}:\n")
+                            dxfProcess._write_polygon_to_file(f, polygon)
+                    else:
+                        f.write(f"Polygon {i+1}:\n")
+                        dxfProcess._write_polygon_to_file(f, poly)
+                elif isinstance(poly, list):
+                    # 处理点列表
+                    f.write(f"Polygon {i+1}:\n")
+                    if poly:
+                        f.write("  Exterior:\n")
+                        for x, y, _ in poly:
+                            f.write(f"    {x}, {y}\n")
+                    else:
+                        f.write("  Empty Polygon\n")
+                else:
+                    print(f"未知的多边形数据类型: {type(poly)}")
+
+                f.write("\n")  # 分隔多边形
+        print(f"TXT 文件已保存为 {filename}")
+
+    @staticmethod
+    def _write_polygon_to_file(f, polygon):
+        """将 Polygon 对象写入文件"""
+        # 处理外边界
+        if polygon.exterior:
+            f.write("  Exterior:\n")
+            for coord in polygon.exterior.coords:
+                x, y = coord[:2]  # 兼容 2D 和 3D
+                f.write(f"    {x}, {y}\n")
+        else:
+            f.write("  Empty Polygon\n")
+
+        # 处理内部孔洞
+        for k, interior in enumerate(polygon.interiors):
+            f.write(f"  Hole {k+1}:\n")
+            for coord in interior.coords:
+                x, y = coord[:2]  # 兼容 2D 和 3D
+                f.write(f"    {x}, {y}\n")
     
     @staticmethod
     def find_font(font_name):
@@ -570,3 +620,31 @@ class dxfProcess:
                 close=False,
                 dxfattribs={"color": color, "layer": layername}
             )
+            
+    @staticmethod
+    def export_dxf_to_txt(input_file, output_file):
+        """
+        将混合文本转换为分组文本
+        :param input_file: 输入文件路径
+        :param output_file: 输出文件路径
+        """
+        polygons = dxfProcess.extract_polygons_from_dxf(input_file)
+        dxfProcess.multipolygon_to_txt(polygons, output_file)
+            
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="dxf 工具")
+    subparsers = parser.add_subparsers(dest='command')
+
+    # 添加 convert 子命令
+    convert_parser = subparsers.add_parser('export_dxf_to_txt', help='导出dxf信息到txt')
+    convert_parser.add_argument('input_file', type=str, help='输入文件路径')
+    convert_parser.add_argument('output_file', type=str, help='输出文件路径')  
+    
+    # 解析命令行参数
+    args = parser.parse_args()
+
+    if args.command == 'export_dxf_to_txt':
+        dxfProcess.export_dxf_to_txt(args.input_file, args.output_file)
+    else:
+        print("请输入正确的命令")
+                

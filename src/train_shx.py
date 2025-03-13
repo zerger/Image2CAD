@@ -113,7 +113,7 @@ class TrainSHX_data:
     
                 # 每行10组，每组5个汉字
                 if len(line_content) == 5:
-                    f.write(''.join(line_content) + ' ')
+                    f.write(' '.join(line_content) + ' ')
                     line_content = []
                     count += 1
     
