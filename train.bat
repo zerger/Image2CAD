@@ -18,10 +18,10 @@ cd "%TRAINING_DIR%"
 text2image --text train_text.txt --outputbase train_font --font "%FONT_NAME%" --fonts_dir "C:/Windows/Fonts" --ptsize 32
 
 :: 3. 生成 .box 文件
-tesseract train_font.tif train_font box.train
+tesseract pdf_page_1.tif pdf_page_1 box.train
 
 :: 4. 生成 lstmf 特征数据
-tesseract train_font.tif train_font lstm
+tesseract pdf_page_1.tif pdf_page_1 lstm
 
 :: 5. 训练 LSTM
 lstmtraining --model_output %LANG%.traineddata --traineddata "%TESSDATA_PREFIX%\chi_sim.traineddata" --train_listfile train_font.lstmf --max_iterations 400
@@ -40,3 +40,6 @@ lstmtraining --model_output custom_chinese.traineddata --traineddata chi_sim.tra
 
 combine_tessdata  -e chi_sim.traineddata  chi_sim.lstm
 tesseract pdf_page_1.tif pdf_page_1 box.train
+
+
+make training MODEL_NAME=foo TESSDATA="E:/Program Files/Tesseract-OCR/tessdata/" START_MODEL=eng
