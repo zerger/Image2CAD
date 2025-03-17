@@ -135,8 +135,8 @@ class TrainSHX_data:
             # 生成临时 Python 脚本
             script_content = (
             "import fontforge\n"
-            f"font = fontforge.open(r'{self.shx_font.replace("'", r"\'")}')\n"
-            f"font.generate(r'{self.ttf_font.replace("'", r"\'")}')\n"
+            # f"font = fontforge.open(r'{self.shx_font.replace("'", r"\'")}')\n"
+            # f"font.generate(r'{self.ttf_font.replace("'", r"\'")}')\n"
             )
             script_path = Path(__file__).parent / "_temp_convert.py"    
             with open(script_path, "w", encoding="utf-8") as f:
