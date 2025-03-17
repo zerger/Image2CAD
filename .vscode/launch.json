@@ -8,9 +8,10 @@
         "program": "${workspaceFolder}/src/Image2CAD.py",
         "args": [
             "pdf2images",
-            "D:/Image2CADPy/TestData/Drawing1.pdf",
+            "D:/Image2CADPy/TestData/11-K2-A1.pdf",
             "",
-            "--dpi=300"
+            "--dpi=800",
+            "--format=tiff"
         ],
         "console": "integratedTerminal",        
     },
@@ -33,7 +34,7 @@
         "program": "${workspaceFolder}/src/Image2CAD.py",
         "args": [
             "ocrprocess",
-            "D:/Image2CADPy/TestData/11-K2-A1_pdf_images/pdf_page_1.png",
+            "D:/Image2CADPy/TestData/11-K2-A1_pdf_images/pdf_page_1.tiff",
             "",            
         ],
         "console": "integratedTerminal"       
@@ -61,14 +62,26 @@
         "console": "integratedTerminal"       
     },
     {
+        "name": "生成训练box",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/src/train_shx.py",
+        "args": [
+            "generate_box_file",
+            "D:/Image2CADPy/TestData/chinese_test.png",
+            "D:/Image2CADPy/TestData/chinese_test.box",            
+        ],
+        "console": "integratedTerminal"       
+    },
+    {
         "name": "dxf导出txt",
         "type": "debugpy",
         "request": "launch",
         "program": "${workspaceFolder}/src/dxfprocess.py",
         "args": [
             "export_dxf_to_txt",
-            "D:/Image2CADPy/TestData/4.dxf",
-            "D:/Image2CADPy/TestData/4_dxf_output.txt",            
+            "D:/Image2CADPy/TestData/pdfImages/output/pdf_page_51.dxf",
+            "D:/Image2CADPy/TestData/pdf_page_51_dxf_output.txt",            
         ],
         "console": "integratedTerminal"       
     },

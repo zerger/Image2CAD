@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 import os
-from PIL import Image, ImageDraw, ImageFont
+import cv2
 import subprocess
 import sys
 import argparse
 from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
 from configManager import ConfigManager
 from util import Util
 
@@ -76,7 +77,7 @@ class TrainSHX_data:
             return        
     
         # 指定要添加的字符集
-        prefix_chars_numbers_letters = "0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz"
+        prefix_chars_numbers_letters = "0123456789\nABCDEFGHIJKLMNOPQRSTUVWXYZ\nabcdefghijklmnopqrstuvwxyz"
         prefix_chars_special = "Ø ∠ ° ± × ÷ ∑ ∆ ∇ ㎡ ㎥"
     
         # 打开输入文件读取内容
@@ -117,8 +118,8 @@ class TrainSHX_data:
                     line_content = []
                     count += 1
     
-                    # 每10组换行
-                    if count == 10:
+                    # 每4组换行
+                    if count == 4:
                         f.write('\n')
                         count = 0
     
@@ -274,8 +275,27 @@ class TrainSHX_data:
             print(f"字体 {font_name} 训练完成，生成 {trained_output}")
 
         print("所有字体训练完成！")
- 
-  
+    
+    @staticmethod
+    def generate_box_file(image_path, box_file_path, min_width=5, min_height=5):
+        # 读取图像
+        image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        image_height = image.shape[0]
+        # 二值化图像
+        _, thresh = cv2.threshold(image, 128, 255, cv2.THRESH_BINARY_INV)
+        # 查找轮廓
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        with open(box_file_path, 'w') as f:
+            for contour in contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                # 过滤掉小边框
+                if w >= min_width and h >= min_height:
+                    # 转换 Y 坐标
+                    y = image_height - (y + h)
+
+                    # 假设每个轮廓是一个字符，您需要根据实际情况调整
+                    char = 'A'  # 这里需要替换为实际的字符
+                    f.write(f"{char} {x} {y} {x+w} {y+h} 0\n")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TrainSHX_data 工具")
@@ -290,6 +310,10 @@ if __name__ == "__main__":
     create_parser.add_argument('input_dir', type=str, help='输入目录路径')
     create_parser.add_argument('output_dir', type=str, help='输出文件路径')
     
+    create_parser = subparsers.add_parser('generate_box_file', help='创建box文件')
+    create_parser.add_argument('input_file', type=str, help='输入文件路径')
+    create_parser.add_argument('output_file', type=str, help='输出文件路径')
+    
     create_parser = subparsers.add_parser('train_tesseract', help='创建训练数据文本文件')
     
     # 解析命令行参数
@@ -299,6 +323,8 @@ if __name__ == "__main__":
         TrainSHX_data.convert_mixed_text_to_grouped_text(args.input_file, args.output_file)
     elif args.command == 'create_training_textdata':
         TrainSHX_data.create_training_textdata(args.input_dir, args.output_dir)
+    elif args.command == 'generate_box_file':
+        TrainSHX_data.generate_box_file(args.input_file, args.output_file)
     elif args.command == 'train_tesseract':
         train_shx = TrainSHX_data()
         train_shx.train_tesseract()

@@ -74,7 +74,7 @@ def validate_input_file(input_path: str) -> None:
         raise InputError(f"输入文件不存在: {input_path}")
     if not path.is_file():
         raise InputError(f"输入路径不是文件: {input_path}")
-    if path.suffix.lower() not in ('.png', '.jpg', '.jpeg'):
+    if path.suffix.lower() not in ('.png', '.jpg', '.jpeg', '.tiff', '.tif'):
         raise InputError(f"不支持的文件格式: {path.suffix}")
     if path.stat().st_size > 100 * 1024 * 1024:  # 100MB限制
         raise InputError("文件大小超过100MB限制")
@@ -743,15 +743,14 @@ def remove_paths_in_text_area(svg_file, text_positions):
 
     tree.write('output_no_text_paths.svg')  # 保存修改后的 SVG 
  
-def _process_pdf_page(page, page_num, output_dir, dpi):
+def pdf_page_to_image(page, page_num, image_path, dpi, image_format='PNG'):
     """ 处理单个 PDF 页面并保存为 PNG """
     try:        
         if dpi > 1000:
             dpi = 1000
             print(f"dpi {dpi} 设置过高, 调整为 1000 ")           
         matrix = pymupdf.Matrix(dpi/72, dpi/72)  # 高DPI矩阵 
-        pix = page.get_pixmap(matrix=matrix, colorspace=pymupdf.csRGB, alpha=False)  # 使用灰度颜色空间   
-        image_path = os.path.join(output_dir, f"pdf_page_{page_num + 1}.png")
+        pix = page.get_pixmap(matrix=matrix, colorspace=pymupdf.csRGB, alpha=False)  # 使用灰度颜色空间          
         #pix.save(image_path)
         # 将图像转换为 PIL 图像
         image = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)        
@@ -772,16 +771,48 @@ def _process_pdf_page(page, page_num, output_dir, dpi):
         )
         # 将 NumPy 数组转换回 PIL 图像
         binary_image = Image.fromarray(binary_np)
-        # 保存图像
-        binary_image.save(image_path)
+         # 保存图像并设置 DPI
+        binary_image.save(image_path, format=image_format.upper(), dpi=(dpi, dpi))
               
         with print_lock:
             print(f"Saved: {image_path}")    
     except Exception as e:
         with print_lock:
             print(f"处理第 {page_num + 1} 页时出错：{e}")
-        
-def pdf_to_images(pdf_path, output_dir=None, dpi=None):
+            
+def pdf_page_to_svg(page, page_num, image_path):
+    try: 
+        # 创建一个矩阵用于缩放和旋转
+        matrix = pymupdf.Matrix(1, 1)  # 1, 1 表示不缩放    
+        # 渲染页面为 SVG
+        svg = page.get_svg_image(matrix=matrix)    
+        # 将 SVG 内容写入文件
+        with open(image_path, 'w', encoding='utf-8') as f:
+            f.write(svg)
+
+        print(f"Page {page_num + 1} has been saved as {image_path}")
+    except Exception as e:
+        with print_lock:
+            print(f"处理第 {page_num + 1} 页时出错：{e}")
+            
+def _process_pdf_page(page, page_num, output_dir, output_type='png', dpi=None):
+    """ 处理单个 PDF 页面并根据类型选择保存为 PNG 或 SVG """
+    
+    # 确保输出目录存在
+    os.makedirs(output_dir, exist_ok=True)    
+    image_path = os.path.join(output_dir, f"pdf_page_{page_num + 1}.{output_type}")
+    if output_type.lower() == 'png':
+        # 保存为 PNG       
+        pdf_page_to_image(page, page_num, image_path, dpi, 'PNG')
+    elif output_type.lower() == 'tiff':
+        pdf_page_to_image(page, page_num, image_path, dpi, 'TIFF')
+    elif output_type.lower() == 'svg':
+        # 保存为 SVG       
+        pdf_page_to_svg(page, page_num, image_path)
+    else:
+        print(f"Unsupported output type: {output_type}")
+                
+def pdf_to_images(pdf_path, output_dir=None, output_type='png', dpi=None):
     """ 并行转换 PDF 为图像 """
     try:
         import pymupdf  # 延迟导入减少依赖
@@ -806,11 +837,12 @@ def pdf_to_images(pdf_path, output_dir=None, dpi=None):
     log_mgr.log_info("\n当前PDF转换参数：")
     log_mgr.log_info(f"├─ 输出目录：{os.path.abspath(output_dir)}")
     log_mgr.log_info(f"├─ 解析精度：{dpi} DPI")
+    log_mgr.log_info(f"├─ 输出类型：{output_type}")
 
     try:
         doc = pymupdf.open(pdf_path)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(_process_pdf_page, doc[page_num], page_num, output_dir, dpi)
+            futures = [executor.submit(_process_pdf_page, doc[page_num], page_num, output_dir, output_type, dpi)
                        for page_num in range(len(doc))]
 
             # 等待所有任务完成
@@ -1077,7 +1109,7 @@ def main():
     convert_group = parser.add_argument_group('转换参数')
     convert_group.add_argument('--dpi', type=int, default=200,
                               help="图像处理DPI（默认: 200）")
-    convert_group.add_argument('--format', choices=['dxf', 'svg', 'dwg'], default='dxf',
+    convert_group.add_argument('--format', choices=['dxf', 'svg', 'dwg', 'png', 'tiff'], default='dxf',
                               help="输出格式（默认: dxf）")    
     convert_group.add_argument('--overwrite', action='store_true',
                               help="覆盖已存在文件")
@@ -1110,7 +1142,7 @@ def main():
         if action == 'pdf2images':
             validate_input_path(args, ['.pdf'])
             output_dir = args.output_path or default_output_path(args.input_path, 'pdf_images')
-            pdf_to_images(args.input_path, output_dir, args.dpi)
+            pdf_to_images(args.input_path, output_dir, args.format, args.dpi)
             
         elif action.lower() in {'png2dxf', 'ocrprocess'}:
             validate_input_path(args, ['.png', '.jpg', '.jpeg'])

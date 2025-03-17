@@ -36,5 +36,7 @@ lstmtraining --model_output jpn_plusminus --continue_from jpn.lstm --old_trained
 
 tesseract jpn.HGMaruGothicMPRO.exp0.tif num -l jpn --psm 6 lstm.train
 
-lstmtraining --model_output custom_chinese.traineddata --traineddata "%TESSDATA_PREFIX%\chi_sim.traineddata" --train_listfile train_font.lstmf --max_iterations 400
+lstmtraining --model_output custom_chinese.traineddata --traineddata chi_sim.traineddata" --train_listfile train_font.lstmf --max_iterations 400
 
+combine_tessdata  -e chi_sim.traineddata  chi_sim.lstm
+tesseract pdf_page_1.tif pdf_page_1 box.train
