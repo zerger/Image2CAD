@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from celery import Celery
 import time
 from image2CAD import pdf_to_images, png_to_dxf

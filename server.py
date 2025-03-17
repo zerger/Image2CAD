@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import FileResponse
 import os
