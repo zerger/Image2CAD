@@ -2,110 +2,110 @@
   "version": "0.2.0",
   "configurations": [
     {
-        "name": "PDF转图片",
-        "type": "debugpy",
-        "request": "launch",
-        "program": "${workspaceFolder}/src/Image2CAD.py",
-        "args": [
-            "pdf2images",
-            "D:/Image2CADPy/TestData/11-K2-A1(第1页).pdf",
-            "",
-            "--dpi=800",
-            "--format=png"
-        ],
-        "console": "integratedTerminal",        
+      "name": "PDF转图片",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/Image2CAD.py",
+      "args": [
+        "pdf2images",
+        "D:/Image2CADPy/TestData/11-K2-A1(第1页).pdf",
+        "",
+        "--dpi=800",
+        "--format=png"
+      ],
+      "console": "integratedTerminal"
     },
     {
-        "name": "PNG矢量化",
-        "type": "debugpy",
-        "request": "launch",
-        "program": "${workspaceFolder}/src/Image2CAD.py",
-        "args": [
-            "png2dxf",
-            "D:/Image2CADPy/TestData/11-K2-A1_pdf_images/pdf_page_1.png",
-            "",            
-        ],
-        "console": "integratedTerminal"       
+      "name": "PNG矢量化",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/Image2CAD.py",
+      "args": [
+        "png2dxf",
+        "D:/Image2CADPy/TestData/11-K2-A1_pdf_images/pdf_page_1.png",
+        ""
+      ],
+      "console": "integratedTerminal"
     },
     {
-        "name": "图片OCR",
-        "type": "debugpy",
-        "request": "launch",
-        "program": "${workspaceFolder}/src/Image2CAD.py",
-        "args": [
-            "ocrprocess",
-            "D:/Image2CADPy/TestData/11-默认图名-K2-A1_pdf_images/pdf_page_1.png",
-            "",            
-        ],
-        "console": "integratedTerminal"       
+      "name": "图片OCR",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/Image2CAD.py",
+      "args": [
+        "ocrprocess",
+        "D:/Image2CADPy/TestData/11-K2-A1_pdf_images/pdf_page_1.png",
+        ""
+      ],
+      "console": "integratedTerminal"
     },
     {
-        "name": "训练shx数据",
-        "type": "debugpy",
-        "request": "launch",
-        "program": "${workspaceFolder}/src/train_shx.py",
-        "args": [
-            "train_tesseract"                    
-        ],
-        "console": "integratedTerminal"       
+      "name": "训练shx数据",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/train_shx.py",
+      "args": [
+        "train_tesseract"
+      ],
+      "console": "integratedTerminal"
     },
     {
-        "name": "生成训练数据",
-        "type": "debugpy",
-        "request": "launch",
-        "program": "${workspaceFolder}/src/train_shx.py",
-        "args": [
-            "create_training_textdata",
-            "D:/Image2CADPy/src/characterset/",
-            "D:/Image2CADPy/tesseract_train/",            
-        ],
-        "console": "integratedTerminal"       
+      "name": "生成训练数据",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/train_shx.py",
+      "args": [
+        "create_training_textdata",
+        "D:/Image2CADPy/src/characterset/",
+        "D:/Image2CADPy/tesseract_train/"
+      ],
+      "console": "integratedTerminal"
     },
     {
-        "name": "生成训练box",
-        "type": "debugpy",
-        "request": "launch",
-        "program": "${workspaceFolder}/src/train_shx.py",
-        "args": [
-            "generate_box_file",
-            "D:/Image2CADPy/TestData/chinese_test.png",
-            "D:/Image2CADPy/TestData/chinese_test.box",            
-        ],
-        "console": "integratedTerminal"       
+      "name": "生成训练box",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/train_shx.py",
+      "args": [
+        "generate_box_file",
+        "D:/Image2CADPy/TestData/chinese_test.png",
+        "D:/Image2CADPy/TestData/chinese_test.box"
+      ],
+      "console": "integratedTerminal"
     },
     {
-        "name": "dxf导出txt",
-        "type": "debugpy",
-        "request": "launch",
-        "program": "${workspaceFolder}/src/dxfprocess.py",
-        "args": [
-            "export_dxf_to_txt",
-            "D:/Image2CADPy/TestData/pdfImages/output/pdf_page_51.dxf",
-            "D:/Image2CADPy/TestData/pdf_page_51_dxf_output.txt",            
-        ],
-        "console": "integratedTerminal"       
+      "name": "dxf导出txt",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/dxfprocess.py",
+      "args": [
+        "export_dxf_to_txt",
+        "D:/Image2CADPy/TestData/pdfImages/output/pdf_page_51.dxf",
+        "D:/Image2CADPy/TestData/pdf_page_51_dxf_output.txt"
+      ],
+      "console": "integratedTerminal"
     },
     {
-        "name": "设置Tesseract",
-        "type": "debugpy",
-        "request": "launch",
-        "program": "${workspaceFolder}/src/Image2CAD.py",
-        "args": [
-            "set-tesseract",
-            "E:/Program Files/Tesseract-OCR/tesseract.exe",            
-        ],
-        "console": "integratedTerminal"       
+      "name": "设置Tesseract",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/Image2CAD.py",
+      "args": [
+        "set-tesseract",
+        "E:/Program Files/Tesseract-OCR/tesseract.exe"
+      ],
+      "console": "integratedTerminal"
     },
     {
-        "name": "服务访问",
-        "type": "debugpy",
-        "request": "launch",
-        "program": "${workspaceFolder}/client.py",
-        "args": [
-            "png_to_dxf",
-            "D:/Image2CADPy/TestData/1.png",            
-        ],
-        "console": "integratedTerminal"       
+      "name": "服务访问",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/client.py",
+      "args": [
+        "png_to_dxf",
+        "D:/Image2CADPy/TestData/1.png"
+      ],
+      "console": "integratedTerminal"
     },
     {
       "name": "C/C++ Runner: Debug Session",
@@ -114,8 +114,8 @@
       "args": [],
       "stopAtEntry": false,
       "externalConsole": true,
-      "cwd": "d:/Image2CAD/src",
-      "program": "d:/Image2CAD/src/build/Debug/outDebug",
+      "cwd": "d:/Image2CADPy/src",
+      "program": "d:/Image2CADPy/src/build/Debug/outDebug",
       "MIMode": "gdb",
       "miDebuggerPath": "gdb",
       "setupCommands": [

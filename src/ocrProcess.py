@@ -114,31 +114,222 @@ class OCRProcess:
             print(item)
         return parsed_results, page_height
     
-    def parse_ocr_result(self, result, page_height):
-        parsed_results = []
-        for line in result:
-            # 提取文本
-            text = line[1][0]
+    def preprocess_image(self, image_path):
+        """
+        图像预处理，提高OCR识别效果
+        :param image_path: 输入图片路径
+        :return: 预处理后的图像
+        """
+        # 读取图像
+        img = cv2.imread(image_path)
+        
+        # 1. 图像缩放（如果图片太大）
+        # max_dimension = 4096  # 最大尺寸
+        # height, width = img.shape[:2]
+        # if max(height, width) > max_dimension:
+        #     scale = max_dimension / max(height, width)
+        #     new_width = int(width * scale)
+        #     new_height = int(height * scale)
+        #     img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_AREA)
+        
+        # 2. 转换为灰度图
+        if len(img.shape) == 3:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = img
             
-            # 提取四点坐标
-            points = line[0]
-            x0 = min(point[0] for point in points)
-            y0 = min(point[1] for point in points)
-            x1 = max(point[0] for point in points)
-            y1 = max(point[1] for point in points)
+        # 3. 自适应直方图均衡化
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        enhanced = clahe.apply(gray)
+        
+        # 4. 降噪
+        denoised = cv2.fastNlMeansDenoising(enhanced)
+        
+        # 5. 自适应二值化
+        binary = cv2.adaptiveThreshold(
+            denoised,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            11,  # 邻域大小
+            2    # 常数差值
+        )
+        
+        return binary
+
+    def get_ocr_result_rapidOCR(self, input_image_path, scale_factor=2):
+        try:
+            from rapidocr import RapidOCR  
+        except ImportError:
+            raise RuntimeError("RapidOCR未安装，请先安装RapidOCR")
+        
+        # 图像预处理
+        preprocessed_img = self.preprocess_image(input_image_path)
+        
+        # 保存预处理后的图像到临时文件
+        temp_path = os.path.join(os.path.dirname(input_image_path), "temp_preprocessed.png")
+        cv2.imwrite(temp_path, preprocessed_img)
+        
+        # 初始化 RapidOCR
+        engine = RapidOCR()
+        
+        # 对预处理后的图像进行分块处理
+        height, width = preprocessed_img.shape[:2]
+        max_block_size = 2048  # 每个分块的最大尺寸
+        overlap = 100  # 重叠区域大小
+        
+        all_results = []
+        
+        # 计算分块数量
+        num_rows = (height + max_block_size - 1) // max_block_size
+        num_cols = (width + max_block_size - 1) // max_block_size
+        
+        for row in range(num_rows):
+            for col in range(num_cols):
+                # 计算当前分块的坐标
+                start_y = max(0, row * max_block_size - overlap)
+                end_y = min(height, (row + 1) * max_block_size + overlap)
+                start_x = max(0, col * max_block_size - overlap)
+                end_x = min(width, (col + 1) * max_block_size + overlap)
+                
+                # 提取分块
+                block = preprocessed_img[start_y:end_y, start_x:end_x]
+                
+                # 放大处理
+                block = cv2.resize(block, (0, 0), fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_LINEAR)
+                
+                # 保存分块到临时文件
+                block_path = os.path.join(os.path.dirname(input_image_path), f"temp_block_{row}_{col}.png")
+                cv2.imwrite(block_path, block)
+                
+                # 对分块进行OCR识别
+                result = engine(block_path)
+                
+                # 调整坐标（加上分块的偏移量，并根据放大倍数缩放）
+                if result is not None and len(result.boxes) > 0:
+                    for i in range(len(result.boxes)):
+                        box = result.boxes[i].astype(float)
+                        # 调整坐标
+                        box[:, 0] = box[:, 0] / scale_factor + start_x  # x坐标缩放并加上分块的x偏移
+                        box[:, 1] = box[:, 1] / scale_factor + start_y  # y坐标缩放并加上分块的y偏移
+                        result.boxes[i] = box
+                        all_results.append((box, result.txts[i], result.scores[i]))
+                
+                # 删除临时分块文件
+                os.remove(block_path)
+        
+        # 删除预处理后的临时文件
+        os.remove(temp_path)
+        
+        # 合并结果并去重
+        merged_results = self._merge_overlapping_results(all_results)
+        
+        # 转换为标准格式
+        image = Image.open(input_image_path)
+        original_height, original_width = image.size
+        parsed_results = []
+        
+        for box, text, score in merged_results:
+            x0 = float(min(point[0] for point in box))
+            y0 = float(min(point[1] for point in box))
+            x1 = float(max(point[0] for point in box))
+            y1 = float(max(point[1] for point in box))
             
             # 计算宽度和高度
             width = x1 - x0
-            height = y1 - y0            
-            # 提取角度信息
-            angle = line[1][2] if len(line[1]) > 2 else 0  # 默认角度为0
+            height = y1 - y0     
+            
             # 转换坐标
-            x, y, width, height = self.convert_to_dxf_coords(x0, y0, x1, y1, page_height)
+            x, y, width, height = self.convert_to_dxf_coords(x0, y0, x1, y1, original_height)
             
             # 添加到结果列表
-            parsed_results.append((text, x, y, width, height, angle))
+            parsed_results.append((text, x, y, width, height, 0))
         
-        return parsed_results
+        return parsed_results, original_height
+        
+    def _merge_overlapping_results(self, results):
+        """
+        合并重叠的OCR结果
+        :param results: [(box, text, score), ...]
+        :return: 合并后的结果
+        """
+        if not results:
+            return []
+            
+        def boxes_overlap(box1, box2, threshold=0.5):
+            """检查两个框是否重叠"""
+            # 计算框的面积
+            def box_area(box):
+                return (max(p[0] for p in box) - min(p[0] for p in box)) * \
+                       (max(p[1] for p in box) - min(p[1] for p in box))
+            
+            # 计算交集面积
+            x1 = max(min(p[0] for p in box1), min(p[0] for p in box2))
+            y1 = max(min(p[1] for p in box1), min(p[1] for p in box2))
+            x2 = min(max(p[0] for p in box1), max(p[0] for p in box2))
+            y2 = min(max(p[1] for p in box1), max(p[1] for p in box2))
+            
+            if x1 < x2 and y1 < y2:
+                intersection = (x2 - x1) * (y2 - y1)
+                area1 = box_area(box1)
+                area2 = box_area(box2)
+                iou = intersection / min(area1, area2)
+                return iou > threshold
+            return False
+        
+        # 按置信度排序
+        sorted_results = sorted(results, key=lambda x: x[2], reverse=True)
+        merged = []
+        used = set()
+        
+        for i, (box1, text1, score1) in enumerate(sorted_results):
+            if i in used:
+                continue
+                
+            current_group = [(box1, text1, score1)]
+            used.add(i)
+            
+            # 查找重叠的框
+            for j, (box2, text2, score2) in enumerate(sorted_results[i+1:], i+1):
+                if j not in used and boxes_overlap(box1, box2):
+                    used.add(j)
+                    # 如果文本相似度高，合并文本
+                    if self._text_similarity(text1, text2) > 0.7:
+                        current_group.append((box2, text2, score2))
+            
+            # 如果只有一个结果，直接添加
+            if len(current_group) == 1:
+                merged.append(current_group[0])
+            else:
+                # 合并重叠的结果
+                merged_box = current_group[0][0]  # 使用置信度最高的框
+                merged_text = max(current_group, key=lambda x: len(x[1]))[1]  # 使用最长的文本
+                merged_score = max(x[2] for x in current_group)  # 使用最高的置信度
+                merged.append((merged_box, merged_text, merged_score))
+        
+        return merged
+        
+    def _text_similarity(self, text1, text2):
+        """
+        计算两个文本的相似度
+        """
+        if not text1 or not text2:
+            return 0
+            
+        # 使用最长公共子序列（LCS）计算相似度
+        def lcs(s1, s2):
+            m, n = len(s1), len(s2)
+            dp = [[0] * (n + 1) for _ in range(m + 1)]
+            for i in range(m):
+                for j in range(n):
+                    if s1[i] == s2[j]:
+                        dp[i + 1][j + 1] = dp[i][j] + 1
+                    else:
+                        dp[i + 1][j + 1] = max(dp[i + 1][j], dp[i][j + 1])
+            return dp[m][n]
+            
+        similarity = 2 * lcs(text1, text2) / (len(text1) + len(text2))
+        return similarity
 
     def get_text_hocr(self, input_path, output_path):
         """增强版OCR处理函数"""

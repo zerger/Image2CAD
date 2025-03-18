@@ -912,8 +912,9 @@ def ocr_process(input_path, output_folder=None):
         start_time = time.time()
         # OCR处理       
         log_mgr.log_info("执行OCR处理...")
-        ocr_process = OCRProcess()       
-        text_positions1 = ocr_process.get_ocr_result_paddle(input_path)
+        ocr_process = OCRProcess() 
+        text_positions1 = ocr_process.get_ocr_result_rapidOCR(input_path)      
+        # text_positions1 = ocr_process.get_ocr_result_paddle(input_path)
         text_positions2 = ocr_process.get_ocr_result_tesseract(input_path, output_folder, min_confidence=70, max_height_diff=10)
         log_mgr.log_processing_time("OCR处理", start_time)
         start_time = time.time()      
