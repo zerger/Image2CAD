@@ -913,18 +913,18 @@ def ocr_process(input_path, output_folder=None):
         # OCR处理       
         log_mgr.log_info("执行OCR处理...")
         ocr_process = OCRProcess() 
-        text_positions1 = ocr_process.get_ocr_result_rapidOCR(input_path, scale_factor=3, max_block_size=1024, overlap=100)      
+        text_positions1 = ocr_process.get_ocr_result_rapidOCR(input_path, scale_factor=10, max_block_size=512, overlap=20)      
         # text_positions1 = ocr_process.get_ocr_result_paddle(input_path)
-        text_positions2 = ocr_process.get_ocr_result_tesseract(input_path, output_folder, min_confidence=70, max_height_diff=10)
+        # text_positions2 = ocr_process.get_ocr_result_tesseract(input_path, output_folder, min_confidence=70, max_height_diff=10)
         log_mgr.log_processing_time("OCR处理", start_time)
         start_time = time.time()      
        
         # === 结果整合 ===
         log_mgr.log_info("输出结果...")
         final_output1 = Path(output_folder) / f"output_{base_name}_1.dxf"    
-        final_output2 = Path(output_folder) / f"output_{base_name}_2.dxf"              
+        # final_output2 = Path(output_folder) / f"output_{base_name}_2.dxf"              
         dxfProcess.save_to_dxf(str(final_output1), [], text_positions1, input_path)
-        dxfProcess.save_to_dxf(str(final_output2), [], text_positions2, input_path)
+        # dxfProcess.save_to_dxf(str(final_output2), [], text_positions2, input_path)
         log_mgr.log_processing_time("结果输出", start_time)
         start_time = time.time()
         

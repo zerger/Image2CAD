@@ -11,6 +11,7 @@ from configManager import ConfigManager, log_mgr
 from PIL import Image
 from rtree import index
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm import tqdm
 
 
 config_manager = ConfigManager.get_instance()
@@ -159,7 +160,8 @@ class OCRProcess:
         
         return binary
 
-    def _process_block(self, row, col, preprocessed_img, scale_factor, input_image_path, engine, start_x, end_x, start_y, end_y):
+    def _process_block(self, row, col, preprocessed_img, scale_factor, input_image_path, 
+                       engine, start_x, end_x, start_y, end_y):
         block_path = None
         try:
             # 提取分块
@@ -172,19 +174,23 @@ class OCRProcess:
             block_path = os.path.join(os.path.dirname(input_image_path), f"temp_block_{row}_{col}.png")
             cv2.imwrite(block_path, block)
             
-            # 对分块进行OCR识别
             result = engine(block_path)
+            
+            # 检查 OCR 结果
+            if result is None or not hasattr(result, 'boxes'):
+                print(f"No valid OCR result for block at row {row}, col {col}")
+                return []  # 返回空结果以继续处理其他分块
             
             # 调整坐标（加上分块的偏移量，并根据放大倍数缩放）
             adjusted_results = []
-            if result is not None and len(result.boxes) > 0:
+            if len(result.boxes) > 0:
                 for i in range(len(result.boxes)):
                     box = result.boxes[i].astype(float)
                     # 调整坐标
                     box[:, 0] = box[:, 0] / scale_factor + start_x  # x坐标缩放并加上分块的x偏移
                     box[:, 1] = box[:, 1] / scale_factor + start_y  # y坐标缩放并加上分块的y偏移
                     result.boxes[i] = box
-                    print(f"row: {row}, col: {col}, start_x: {start_x}, end_x: {end_x}, start_y: {start_y}, end_y: {end_y}， box: {box}")
+                    # print(f"row: {row}, col: {col}, start_x: {start_x}, end_x: {end_x}, start_y: {start_y}, end_y: {end_y}， box: {box}")
                     adjusted_results.append((box, result.txts[i], result.scores[i]))
             
             return adjusted_results
@@ -197,6 +203,16 @@ class OCRProcess:
             # 确保删除临时分块文件
             if block_path and os.path.exists(block_path):
                 os.remove(block_path)
+                
+    def _is_vertical_text(self, box):
+        x0, y0 = min(point[0] for point in box), min(point[1] for point in box)
+        x1, y1 = max(point[0] for point in box), max(point[1] for point in box)
+
+        width = x1 - x0
+        height = y1 - y0
+
+        # 假设竖向文本的长宽比大于 2
+        return height / width > 2
         
     def get_ocr_result_rapidOCR(self, input_image_path, scale_factor=2, max_block_size=2048, overlap=100):
         """
@@ -211,27 +227,27 @@ class OCRProcess:
         except ImportError:
             raise RuntimeError("RapidOCR未安装，请先安装RapidOCR")
         
-        # 图像预处理
-        preprocessed_img = self.preprocess_image(input_image_path)
+        # # 图像预处理
+        # preprocessed_img = self.preprocess_image(input_image_path)
         
-        # 保存预处理后的图像到临时文件
-        temp_path = os.path.join(os.path.dirname(input_image_path), "temp_preprocessed.png")
-        cv2.imwrite(temp_path, preprocessed_img)
-        
+        # # 保存预处理后的图像到临时文件
+        # temp_path = os.path.join(os.path.dirname(input_image_path), "temp_preprocessed.png")
+        # cv2.imwrite(temp_path, preprocessed_img)
+        input_img = cv2.imread(input_image_path)
         # 初始化 RapidOCR
         engine = RapidOCR()
         
         # 对预处理后的图像进行分块处理
-        height, width = preprocessed_img.shape[:2]     
+        height, width = input_img.shape[:2]     
         all_results = []
         
         # 计算分块数量
         num_rows = (height + max_block_size - 1) // max_block_size
         num_cols = (width + max_block_size - 1) // max_block_size    
 
-        max_workers = int(config_manager.get_setting(key='max_workers', fallback=os.cpu_count()//2))
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = []
+        # 使用 tqdm 显示进度条
+        total_blocks = num_rows * num_cols
+        with tqdm(total=total_blocks, desc="Processing Blocks") as pbar:
             for row in range(num_rows):
                 start_y = max(0, row * max_block_size - overlap)
                 end_y = min(height, (row + 1) * max_block_size + overlap)
@@ -239,14 +255,13 @@ class OCRProcess:
                     start_x = max(0, col * max_block_size - overlap)
                     end_x = min(width, (col + 1) * max_block_size + overlap)
                     
-                    # 提交任务到线程池
-                    futures.append(executor.submit(self._process_block, row, col, preprocessed_img, scale_factor, input_image_path, 
-                                                   engine, start_x, end_x, start_y, end_y))
-            
-            # 收集结果
-            for future in as_completed(futures):
-                all_results.extend(future.result())
-        
+                    block_result = self._process_block(row, col, input_img, scale_factor, input_image_path, 
+                                        engine, start_x, end_x, start_y, end_y)
+                    all_results.extend(block_result)
+                    
+                    # 更新进度条
+                    pbar.update(1)
+
         # 合并结果并去重
         merged_results = self._merge_overlapping_results(all_results)
         
@@ -267,9 +282,17 @@ class OCRProcess:
             
             # 转换坐标
             x, y, width, height = self.convert_to_dxf_coords(x0, y0, x1, y1, original_height)
-            
+            if self._is_vertical_text(box):
+                x = x + width                
+                new_width = height
+                new_height = width   
+                angle = 90
+            else:
+                new_width = width
+                new_height = height   
+                angle = 0      
             # 添加到结果列表
-            parsed_results.append((text, x, y, width, height, 0))
+            parsed_results.append((text, x, y, new_width, new_height, angle))
         
         return parsed_results, original_height
         

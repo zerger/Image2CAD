@@ -207,7 +207,7 @@ class dxfProcess:
                 for text, x, y, width, height, angle in words:  
                     if height <= 0:
                         continue      
-                    cls.add_text(msp, text, (x, y), height, 0, layer='文本')  
+                    cls.add_text(msp, text, (x, y), height, angle, layer='文本')  
 
         # 保存修改后的 DXF 文件
         doc.saveas(dxf_file)  
