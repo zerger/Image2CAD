@@ -10,6 +10,7 @@ import numpy as np
 from configManager import ConfigManager, log_mgr
 from PIL import Image
 from rtree import index
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 config_manager = ConfigManager.get_instance()
@@ -158,7 +159,53 @@ class OCRProcess:
         
         return binary
 
-    def get_ocr_result_rapidOCR(self, input_image_path, scale_factor=2):
+    def _process_block(self, row, col, preprocessed_img, scale_factor, input_image_path, engine, start_x, end_x, start_y, end_y):
+        block_path = None
+        try:
+            # 提取分块
+            block = preprocessed_img[start_y:end_y, start_x:end_x]
+            
+            # 放大处理
+            block = cv2.resize(block, (0, 0), fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_LINEAR)
+            
+            # 保存分块到临时文件
+            block_path = os.path.join(os.path.dirname(input_image_path), f"temp_block_{row}_{col}.png")
+            cv2.imwrite(block_path, block)
+            
+            # 对分块进行OCR识别
+            result = engine(block_path)
+            
+            # 调整坐标（加上分块的偏移量，并根据放大倍数缩放）
+            adjusted_results = []
+            if result is not None and len(result.boxes) > 0:
+                for i in range(len(result.boxes)):
+                    box = result.boxes[i].astype(float)
+                    # 调整坐标
+                    box[:, 0] = box[:, 0] / scale_factor + start_x  # x坐标缩放并加上分块的x偏移
+                    box[:, 1] = box[:, 1] / scale_factor + start_y  # y坐标缩放并加上分块的y偏移
+                    result.boxes[i] = box
+                    print(f"row: {row}, col: {col}, start_x: {start_x}, end_x: {end_x}, start_y: {start_y}, end_y: {end_y}， box: {box}")
+                    adjusted_results.append((box, result.txts[i], result.scores[i]))
+            
+            return adjusted_results
+
+        except Exception as e:
+            print(f"Error processing block at row {row}, col {col}: {e}")
+            return []  # 返回空结果以继续处理其他分块
+
+        finally:
+            # 确保删除临时分块文件
+            if block_path and os.path.exists(block_path):
+                os.remove(block_path)
+        
+    def get_ocr_result_rapidOCR(self, input_image_path, scale_factor=2, max_block_size=2048, overlap=100):
+        """
+        使用 RapidOCR 进行OCR识别
+        :param input_image_path: 输入图片路径
+        :param scale_factor: 放大倍数
+        :param max_block_size: 每个分块的最大尺寸
+        :param overlap: 重叠区域大小
+        """
         try:
             from rapidocr import RapidOCR  
         except ImportError:
@@ -175,52 +222,30 @@ class OCRProcess:
         engine = RapidOCR()
         
         # 对预处理后的图像进行分块处理
-        height, width = preprocessed_img.shape[:2]
-        max_block_size = 2048  # 每个分块的最大尺寸
-        overlap = 100  # 重叠区域大小
-        
+        height, width = preprocessed_img.shape[:2]     
         all_results = []
         
         # 计算分块数量
         num_rows = (height + max_block_size - 1) // max_block_size
-        num_cols = (width + max_block_size - 1) // max_block_size
-        
-        for row in range(num_rows):
-            # 计算当前分块的坐标
-            start_y = max(0, row * max_block_size - overlap)
-            end_y = min(height, (row + 1) * max_block_size + overlap)
-            for col in range(num_cols):              
-                start_x = max(0, col * max_block_size - overlap)
-                end_x = min(width, (col + 1) * max_block_size + overlap)              
-                # 提取分块
-                block = preprocessed_img[start_y:end_y, start_x:end_x]
-                
-                # 放大处理
-                block = cv2.resize(block, (0, 0), fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_LINEAR)
-                
-                # 保存分块到临时文件
-                block_path = os.path.join(os.path.dirname(input_image_path), f"temp_block_{row}_{col}.png")
-                cv2.imwrite(block_path, block)
-                
-                # 对分块进行OCR识别
-                result = engine(block_path)
-                
-                # 调整坐标（加上分块的偏移量，并根据放大倍数缩放）
-                if result is not None and len(result.boxes) > 0:
-                    for i in range(len(result.boxes)):
-                        box = result.boxes[i].astype(float)
-                        # 调整坐标
-                        box[:, 0] = box[:, 0] / scale_factor + start_x  # x坐标缩放并加上分块的x偏移
-                        box[:, 1] = box[:, 1] / scale_factor + start_y  # y坐标缩放并加上分块的y偏移
-                        result.boxes[i] = box
-                        print(f"row: {row}, col: {col}, start_x: {start_x}, end_x: {end_x}, start_y: {start_y}, end_y: {end_y}， box: {box}")
-                        all_results.append((box, result.txts[i], result.scores[i]))                       
-                
-                # 删除临时分块文件
-                # os.remove(block_path)            
-        
-        # 删除预处理后的临时文件
-        # os.remove(temp_path)
+        num_cols = (width + max_block_size - 1) // max_block_size    
+
+        max_workers = int(config_manager.get_setting(key='max_workers', fallback=os.cpu_count()//2))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
+            for row in range(num_rows):
+                start_y = max(0, row * max_block_size - overlap)
+                end_y = min(height, (row + 1) * max_block_size + overlap)
+                for col in range(num_cols):
+                    start_x = max(0, col * max_block_size - overlap)
+                    end_x = min(width, (col + 1) * max_block_size + overlap)
+                    
+                    # 提交任务到线程池
+                    futures.append(executor.submit(self._process_block, row, col, preprocessed_img, scale_factor, input_image_path, 
+                                                   engine, start_x, end_x, start_y, end_y))
+            
+            # 收集结果
+            for future in as_completed(futures):
+                all_results.extend(future.result())
         
         # 合并结果并去重
         merged_results = self._merge_overlapping_results(all_results)
