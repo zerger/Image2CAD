@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 import numpy as np
 from configManager import ConfigManager, log_mgr
 from PIL import Image
+from rtree import index
 
 
 config_manager = ConfigManager.get_instance()
@@ -219,7 +220,7 @@ class OCRProcess:
                 os.remove(block_path)
         
         # 删除预处理后的临时文件
-        os.remove(temp_path)
+        # os.remove(temp_path)
         
         # 合并结果并去重
         merged_results = self._merge_overlapping_results(all_results)
@@ -255,7 +256,7 @@ class OCRProcess:
         """
         if not results:
             return []
-            
+
         def boxes_overlap(box1, box2, threshold=0.5):
             """检查两个框是否重叠"""
             # 计算框的面积
@@ -276,27 +277,40 @@ class OCRProcess:
                 iou = intersection / min(area1, area2)
                 return iou > threshold
             return False
-        
+
         # 按置信度排序
         sorted_results = sorted(results, key=lambda x: x[2], reverse=True)
         merged = []
         used = set()
-        
+
+        # 创建 R-tree 索引
+        idx = index.Index()
+        for i, (box, text, score) in enumerate(sorted_results):
+            x0, y0 = min(p[0] for p in box), min(p[1] for p in box)
+            x1, y1 = max(p[0] for p in box), max(p[1] for p in box)
+            idx.insert(i, (x0, y0, x1, y1))
+
         for i, (box1, text1, score1) in enumerate(sorted_results):
             if i in used:
                 continue
-                
+
             current_group = [(box1, text1, score1)]
             used.add(i)
-            
-            # 查找重叠的框
-            for j, (box2, text2, score2) in enumerate(sorted_results[i+1:], i+1):
-                if j not in used and boxes_overlap(box1, box2):
-                    used.add(j)
-                    # 如果文本相似度高，合并文本
-                    if self._text_similarity(text1, text2) > 0.7:
-                        current_group.append((box2, text2, score2))
-            
+
+            # 使用 R-tree 查找可能重叠的框
+            x0, y0 = min(p[0] for p in box1), min(p[1] for p in box1)
+            x1, y1 = max(p[0] for p in box1), max(p[1] for p in box1)
+            possible_overlaps = list(idx.intersection((x0, y0, x1, y1)))
+
+            for j in possible_overlaps:
+                if j != i and j not in used:
+                    box2, text2, score2 = sorted_results[j]
+                    if boxes_overlap(box1, box2):
+                        used.add(j)
+                        # 如果文本相似度高，合并文本
+                        if self._text_similarity(text1, text2) > 0.7:
+                            current_group.append((box2, text2, score2))
+
             # 如果只有一个结果，直接添加
             if len(current_group) == 1:
                 merged.append(current_group[0])
@@ -306,7 +320,7 @@ class OCRProcess:
                 merged_text = max(current_group, key=lambda x: len(x[1]))[1]  # 使用最长的文本
                 merged_score = max(x[2] for x in current_group)  # 使用最高的置信度
                 merged.append((merged_box, merged_text, merged_score))
-        
+
         return merged
         
     def _text_similarity(self, text1, text2):
