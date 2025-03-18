@@ -108,12 +108,12 @@ class OCRProcess:
         )        
         result = ocr.ocr(input_image_path, cls=True)          
         image = Image.open(input_image_path)
-        page_height = image.height
+        original_width, original_height = image.size
         # 解析结果
-        parsed_results = self.parse_ocr_result(result[0], page_height)
+        parsed_results = self.parse_ocr_result(result[0], original_height)
         for item in parsed_results:
             print(item)
-        return parsed_results, page_height
+        return parsed_results, original_height
     
     def preprocess_image(self, image_path):
         """
@@ -186,13 +186,12 @@ class OCRProcess:
         num_cols = (width + max_block_size - 1) // max_block_size
         
         for row in range(num_rows):
-            for col in range(num_cols):
-                # 计算当前分块的坐标
-                start_y = max(0, row * max_block_size - overlap)
-                end_y = min(height, (row + 1) * max_block_size + overlap)
+            # 计算当前分块的坐标
+            start_y = max(0, row * max_block_size - overlap)
+            end_y = min(height, (row + 1) * max_block_size + overlap)
+            for col in range(num_cols):              
                 start_x = max(0, col * max_block_size - overlap)
-                end_x = min(width, (col + 1) * max_block_size + overlap)
-                
+                end_x = min(width, (col + 1) * max_block_size + overlap)              
                 # 提取分块
                 block = preprocessed_img[start_y:end_y, start_x:end_x]
                 
@@ -214,10 +213,11 @@ class OCRProcess:
                         box[:, 0] = box[:, 0] / scale_factor + start_x  # x坐标缩放并加上分块的x偏移
                         box[:, 1] = box[:, 1] / scale_factor + start_y  # y坐标缩放并加上分块的y偏移
                         result.boxes[i] = box
-                        all_results.append((box, result.txts[i], result.scores[i]))
+                        print(f"row: {row}, col: {col}, start_x: {start_x}, end_x: {end_x}, start_y: {start_y}, end_y: {end_y}， box: {box}")
+                        all_results.append((box, result.txts[i], result.scores[i]))                       
                 
                 # 删除临时分块文件
-                os.remove(block_path)
+                # os.remove(block_path)            
         
         # 删除预处理后的临时文件
         # os.remove(temp_path)
@@ -227,7 +227,7 @@ class OCRProcess:
         
         # 转换为标准格式
         image = Image.open(input_image_path)
-        original_height, original_width = image.size
+        original_width, original_height = image.size
         parsed_results = []
         
         for box, text, score in merged_results:

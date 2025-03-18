@@ -34,7 +34,7 @@
       "program": "${workspaceFolder}/src/Image2CAD.py",
       "args": [
         "ocrprocess",
-        "D:/Image2CADPy/TestData/11-K2-A1(第1页)_pdf_images/3.png",
+        "D:/Image2CADPy/TestData/11-K2-A1_pdf_images/pdf_page_1.png",
         ""
       ],
       "console": "integratedTerminal"
