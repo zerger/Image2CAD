@@ -217,7 +217,7 @@ class OCRProcess:
         # 假设竖向文本的长宽比大于 2
         return height / width > 2
         
-    def get_ocr_result_rapidOCR(self, input_image_path, scale_factor=5, max_block_size=1024, overlap=100):
+    def get_ocr_result_rapidOCR(self, input_image_path, scale_factor=5, max_block_size=512, overlap=20):
         """
         使用 RapidOCR 进行OCR识别
         :param input_image_path: 输入图片路径
@@ -266,7 +266,7 @@ class OCRProcess:
                     
                     # 更新进度条
                     pbar.update(1)        
-        Util.remove_directory(temp_dir)
+        # Util.remove_directory(temp_dir)
         # 合并结果并去重
         merged_results = self._merge_overlapping_results(all_results)
         
@@ -883,9 +883,9 @@ class OCRProcess:
     
 
     def process_single_file(self, input_path, output_folder, 
-                            scale_factor=5,
-                            max_block_size=1024, 
-                            overlap=100):
+                            scale_factor=4,
+                            max_block_size=512, 
+                            overlap=50):
         """
         处理单个文件的OCR流程
 
@@ -938,9 +938,9 @@ class OCRProcess:
             return (input_path, False, None)
         
     def ocr_process(self, input_path, output_folder=None, 
-                    scale_factor=10,
+                    scale_factor=4,    
                     max_block_size=512, 
-                    overlap=20):
+                    overlap=50):
             """
             安全处理单个文件或文件夹的全流程
 
@@ -989,9 +989,9 @@ if __name__ == "__main__":
     convert_parser = subparsers.add_parser('ocr_process', help='ocr 识别')
     convert_parser.add_argument('input_file', type=str, help='输入文件(路径)')
     convert_parser.add_argument('output_path', type=str, help='输出路径')  
-    convert_parser.add_argument('--scale_factor', type=int, default=5, help='放大倍数')
-    convert_parser.add_argument('--max_block_size', type=int, default=1024, help='每个分块的最大尺寸')
-    convert_parser.add_argument('--overlap', type=int, default=20, help='重叠区域大小')
+    convert_parser.add_argument('--scale_factor', type=int, default=4, help='放大倍数')
+    convert_parser.add_argument('--max_block_size', type=int, default=512, help='每个分块的最大尺寸')
+    convert_parser.add_argument('--overlap', type=int, default=50, help='重叠区域大小')
     
      # OCR参数组
     ocr_group = parser.add_argument_group('OCR参数')

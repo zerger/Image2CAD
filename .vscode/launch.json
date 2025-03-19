@@ -36,11 +36,21 @@
         "ocr_process",
         "D:/Image2CADPy/TestData/00P2184Combination/page_1.png",
         "",
-        "--scale_factor=5",
-        "--max_block_size=1024",
-        "--overlap=100"
+        "--scale_factor=4",
+        "--max_block_size=512",
+        "--overlap=50"  
       ],
       "console": "integratedTerminal"
+    },
+    {
+        "name": "图片App",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/src/imageApp.py",
+        "args": [      
+            "D:/Image2CADPy/TestData/11-K2-A1_pdf_images/pdf_page_1.png",   
+        ],
+        "console": "integratedTerminal"
     },
     {
       "name": "训练shx数据",

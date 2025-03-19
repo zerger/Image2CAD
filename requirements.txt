@@ -16,3 +16,5 @@ rtree
 setuptools
 PyMuPDF
 func_timeout
+pytesseract
+matplotlib
