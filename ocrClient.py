@@ -3,7 +3,7 @@ import requests
 import base64
 import time
 
-def test_ocr(image_path, url='http://localhost:9003/ocr'):
+def test_ocr(image_path, url='http://10.0.101.60:9003/ocr'):
     with open(image_path, 'rb') as f:
         img_b64 = base64.b64encode(f.read()).decode()
     
@@ -21,6 +21,7 @@ def test_ocr(image_path, url='http://localhost:9003/ocr'):
 # 并发测试示例
 from concurrent.futures import ThreadPoolExecutor
 
-with ThreadPoolExecutor(max_workers=5) as executor:
-    futures = [executor.submit(test_ocr, 'test.jpg') for _ in range(10)]
-    results = [f.result() for f in futures]
+if __name__ == "__main__":  
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(test_ocr, 'D:/Image2CADPy/TestData/1.png') for _ in range(10)]
+        results = [f.result() for f in futures]

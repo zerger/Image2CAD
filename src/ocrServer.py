@@ -41,6 +41,7 @@ engine_pool = init_engine_pool(POOL_SIZE)
 def ocr_service():
     # 参数校验
     if 'image' not in request.json:
+        logging.error("Missing image parameter")
         return jsonify({"error": "Missing image parameter"}), 400
     
     # Base64解码
@@ -55,7 +56,9 @@ def ocr_service():
     engine = engine_pool.get()
     try:
         # 直接处理二进制数据
-        result, elapse = engine(img_bytes)
+        ocr_output = engine(img_bytes)  # 假设返回一个对象
+        result = ocr_output.result  # 假设对象有 result 属性
+        elapse = ocr_output.elapse  # 假设对象有 elapse 属性
     except Exception as e:
         logging.error(f"OCR处理失败: {str(e)}")
         return jsonify({"error": f"OCR处理失败: {str(e)}"}), 500
