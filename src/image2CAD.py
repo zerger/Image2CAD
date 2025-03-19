@@ -32,7 +32,6 @@ import shutil
 import time
 import sys
 import threading
-import ocrProcess
 from Centerline.geometry import Centerline
 from ocrProcess import OCRProcess
 from dxfProcess import dxfProcess
@@ -66,25 +65,6 @@ def retry(max_attempts: int = 3, delay: int = 1):
                     time.sleep(delay * attempt)
         return wrapper
     return decorator
-
-def validate_input_file(input_path: str) -> None:
-    """验证输入文件有效性"""
-    path = Path(input_path)
-    if not path.exists():
-        raise InputError(f"输入文件不存在: {input_path}")
-    if not path.is_file():
-        raise InputError(f"输入路径不是文件: {input_path}")
-    if path.suffix.lower() not in ('.png', '.jpg', '.jpeg', '.tiff', '.tif'):
-        raise InputError(f"不支持的文件格式: {path.suffix}")
-    if path.stat().st_size > 100 * 1024 * 1024:  # 100MB限制
-        raise InputError("文件大小超过100MB限制")
-
-def check_system_resources() -> None:
-    """检查系统资源是否充足"""
-    # 示例：检查磁盘空间
-    free_space, _ = Util.get_disk_space_psutil('/')
-    if free_space < 500 * 1024 * 1024:  # 500MB
-        raise ResourceError("磁盘空间不足（需要至少500MB空闲空间）")
 
 @retry(max_attempts=3, delay=2)
 def convert_pbm_with_retry(pbm_path: str, dxf_path: str) -> None:
@@ -134,8 +114,8 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
     try:
         # === 阶段1：输入验证 ===
         log_mgr.log_info(f"开始处理文件: {input_path}")
-        validate_input_file(input_path)
-        check_system_resources()
+        Util.validate_image_file(input_path)
+        Util.check_system_resources()
         
         # === 阶段2：准备输出 ===
         os.makedirs(output_folder, exist_ok=True)
@@ -822,7 +802,7 @@ def pdf_to_images(pdf_path, output_dir=None, output_type='png', dpi=None):
     dir = os.path.dirname(pdf_Dir)
 
     if output_dir is None:      
-        output_dir = default_output_path(pdf_path, 'pdf_images')
+        output_dir = Util.default_output_path(pdf_path, 'pdf_images')
 
      # 从配置获取参数 
     config_manager.apply_security_settings()    
@@ -874,7 +854,7 @@ def png_to_dxf(input_path, output_folder=None):
     elif os.path.isfile(input_path) and Util.has_valid_files(input_path, allowed_ext):
         # 如果没有指定输出文件夹，则使用输入文件的目录
         if output_folder is None:
-            output_folder = default_output_path(input_path, 'cad_output')
+            output_folder = Util.default_output_path(input_path, 'cad')
         
         # 确保输出文件夹存在
         if not os.path.exists(output_folder):
@@ -883,66 +863,8 @@ def png_to_dxf(input_path, output_folder=None):
         # 处理单个文件
         process_single_file(input_path, output_folder)
     else:
-        raise ValueError(f"Invalid input path: {input_path}. Must be a .png file or a folder containing .png files.")
-    
-def ocr_process(input_path, output_folder=None):
-    """
-    安全处理单个文件的全流程
-    
-    :param input_path: 输入文件路径
-    :param output_folder: 输出目录
-    :return: (是否成功, 输出文件路径)
-    """
-    fn_start_time = time.time()  
-    
-    setup_logging(console=True)
-    dxfProcess.setup_dxf_logging()
-    try:
-        log_mgr.log_info(f"开始处理文件: {input_path}")
-        validate_input_file(input_path)
-        check_system_resources()                
-       
-        os.makedirs(output_folder, exist_ok=True)
-        if not os.access(output_folder, os.W_OK):
-            raise PermissionError(f"输出目录不可写: {output_folder}")
-            
-        base_name = Path(input_path).stem
-        output_dxf = Path(output_folder) / f"{base_name}.dxf"        
-      
-        start_time = time.time()
-        # OCR处理       
-        log_mgr.log_info("执行OCR处理...")
-        ocr_process = OCRProcess() 
-        text_positions1 = ocr_process.get_ocr_result_rapidOCR(input_path, scale_factor=10, max_block_size=512, overlap=20)      
-        # text_positions1 = ocr_process.get_ocr_result_paddle(input_path)
-        # text_positions2 = ocr_process.get_ocr_result_tesseract(input_path, output_folder, min_confidence=70, max_height_diff=10)
-        log_mgr.log_processing_time("OCR处理", start_time)
-        start_time = time.time()      
-       
-        # === 结果整合 ===
-        log_mgr.log_info("输出结果...")
-        final_output1 = Path(output_folder) / f"output_{base_name}_1.dxf"    
-        # final_output2 = Path(output_folder) / f"output_{base_name}_2.dxf"              
-        dxfProcess.save_to_dxf(str(final_output1), [], text_positions1, input_path)
-        # dxfProcess.save_to_dxf(str(final_output2), [], text_positions2, input_path)
-        log_mgr.log_processing_time("结果输出", start_time)
-        start_time = time.time()
-        
-        log_mgr.log_info(f"成功处理文件: {input_path}")
-        log_mgr.log_info(f"结果输出文件: {final_output1}")
-        
-        return True, str(final_output1)           
-    except InputError as e:
-        log_mgr.log_exception(f"输入错误: {e}")
-    except ResourceError as e:
-        log_mgr.log_exception(f"系统资源错误: {e}")
-        raise  # 向上传递严重错误
-    except TimeoutError as e:
-        log_mgr.log_exception(f"处理超时: {e}")
-    except Exception as e:
-        log_mgr.log_exception(f"未处理的异常发生: {e}")
-    finally:        
-        log_mgr.log_processing_time(f"{base_name} 结束", fn_start_time)
+        raise ValueError(f"Invalid input path: {input_path}. Must be a .png file or a folder containing .png files.")    
+
     
 def process_files_in_parallel(input_path, output_folder, max_processes=None):
     # 获取所有文件
@@ -1050,31 +972,6 @@ def validate_input_path(args, allowed_ext):
                 f"输入路径：{input_path}"
                 )
 
-def default_output_path(input_path, suffix):
-    """生成默认输出路径"""
-    base_dir = Path(__file__).parent.parent / 'TestData'
-    file_name = Path(input_path).stem.replace(" ", "_")
-    return os.path.join(base_dir, f"{file_name}_{suffix}")
-
-def check_system_requirements():
-    """系统环境检查"""
-    checks = [
-        ('Tesseract OCR', config_manager.get_tesseract_path()),
-        ('Potrace', config_manager.get_potrace_path()),
-        ('Free Disk Space', Util.get_disk_space('/')[0] > 500*1024*1024),
-        ('Memory', Util.get_memory_info()[1] > 2*1024*1024)  # 2GB以上
-    ]
-    
-    print("\n系统环境检查报告:")
-    for name, status in checks:
-        status_str = "✓ OK" if status else "✗ 缺失"
-        print(f"{name:15} {status_str}")
-    
-    if all(status for _, status in checks):
-        print("\n环境检查通过")
-    else:
-        print("\n警告：存在缺失的依赖项")
-
 def main():    
     # 设置命令行参数解析器
     parser = argparse.ArgumentParser(
@@ -1088,15 +985,11 @@ def main():
     
     # 主命令参数
     parser.add_argument('action', 
-                        choices=['pdf2images', 'png2dxf', 'ocrprocess', 'set-tesseract', 
-                                 'set-potrace', 'check-env'],
+                        choices=['pdf2images', 'png2dxf'],
                         help="""操作选项:
     pdf2images   : 将PDF转换为PNG图像
-    png2dxf      : 转换PNG图像为CAD格式
-    ocrProcess   : 图片OCR识别
-    set-tesseract: 设置Tesseract OCR路径
-    set-potrace  : 设置Potrace矢量转换路径
-    check-env    : 检查运行环境配置""")
+    png2dxf      : 转换PNG图像为CAD格式   
+    """)
     
     # 通用参数
     parser.add_argument('input_path', nargs='?', 
@@ -1113,28 +1006,15 @@ def main():
     convert_group.add_argument('--format', choices=['dxf', 'svg', 'dwg', 'png', 'tiff'], default='dxf',
                               help="输出格式（默认: dxf）")    
     convert_group.add_argument('--overwrite', action='store_true',
-                              help="覆盖已存在文件")
-    
-    # OCR参数组
-    ocr_group = parser.add_argument_group('OCR参数')
-    ocr_group.add_argument('--lang', default='chi_sim+eng',
-                          help="OCR识别语言（默认: chi_sim+eng）")
-    ocr_group.add_argument('--no-ocr', action='store_true',
-                          help="禁用文字识别功能")  
+                              help="覆盖已存在文件")   
     
     try:
         args = parser.parse_args()
         setup_logging()  # 初始化日志
         action = args.action.lower()
         # 参数验证
-        if action in ['pdf2images', 'png2dxf', 'ocrProcess'] and not args.input_path:
-            raise InputError("必须指定输入路径")
-            
-        if action == 'set-tesseract' and not args.input_path:
-            raise InputError("必须指定Tesseract路径")
-            
-        if action == 'set-potrace' and not args.input_path:
-            raise InputError("必须指定Potrace路径")
+        if action in ['pdf2images', 'png2dxf'] and not args.input_path:
+            raise InputError("必须指定输入路径")  
             
         # 加载配置文件
         config_manager.load_config(args.config)      
@@ -1142,26 +1022,16 @@ def main():
         # 根据选择的 action 执行
         if action == 'pdf2images':
             validate_input_path(args, ['.pdf'])
-            output_dir = args.output_path or default_output_path(args.input_path, 'pdf_images')
+            output_dir = args.output_path or Util.default_output_path(args.input_path, 'pdf_images')
             pdf_to_images(args.input_path, output_dir, args.format, args.dpi)
             
-        elif action.lower() in {'png2dxf', 'ocrprocess'}:
+        elif action.lower() in {'png2dxf'}:
             validate_input_path(args, ['.png', '.jpg', '.jpeg'])
-            output_dir = args.output_path or default_output_path(args.input_path, 'cad_output')
+            output_dir = args.output_path or Util.default_output_path(args.input_path, 'cad')
             if action == 'png2dxf':
-                png_to_dxf(args.input_path, output_dir)
-            elif action == 'ocrprocess':
-                ocr_process(args.input_path, output_dir)          
-        elif action == 'set-tesseract':
-            config_manager.set_tesseract_path(args.input_path)
-            log_mgr.log_info(f"Tesseract路径已设置为: {config_manager.get_tesseract_path()}")
-            
-        elif action == 'set-potrace':
-            config_manager.set_potrace_path(args.input_path)
-            log_mgr.log_info(f"Potrace路径已设置为: {config_manager.get_potrace_path()}")
-            
-        elif action == 'check-env':
-            check_system_requirements()
+                png_to_dxf(args.input_path, output_dir)        
+        else:
+            print("请输入正确的命令")
             
     except argparse.ArgumentError as e:
         log_mgr.log_error(f"参数错误: {e}")

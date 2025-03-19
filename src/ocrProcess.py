@@ -7,13 +7,19 @@ import cv2
 import re
 from bs4 import BeautifulSoup
 import numpy as np
-from configManager import ConfigManager, log_mgr
 from PIL import Image
 from rtree import index
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
+import time
+import argparse
+from configManager import ConfigManager, log_mgr
+from logManager import LogManager, setup_logging
+from errors import ProcessingError, InputError, ResourceError, TimeoutError
+from util import Util
+from dxfProcess import dxfProcess
 
 
+log_mgr = LogManager().get_instance()
 config_manager = ConfigManager.get_instance()
 class OCRProcess:
     def __init__(self):
@@ -127,8 +133,9 @@ class OCRProcess:
         img = cv2.imread(image_path)
         
         # 1. 图像缩放（如果图片太大）
-        # max_dimension = 4096  # 最大尺寸
-        # height, width = img.shape[:2]
+        max_dimension = 4096  # 最大尺寸
+        height, width = img.shape[:2]
+        scale = 1
         # if max(height, width) > max_dimension:
         #     scale = max_dimension / max(height, width)
         #     new_width = int(width * scale)
@@ -158,9 +165,9 @@ class OCRProcess:
             2    # 常数差值
         )
         
-        return binary
+        return binary, scale
 
-    def _process_block(self, row, col, preprocessed_img, scale_factor, input_image_path, 
+    def _process_block(self, row, col, preprocessed_img, scale_factor, temp_dir, 
                        engine, start_x, end_x, start_y, end_y):
         block_path = None
         try:
@@ -171,9 +178,10 @@ class OCRProcess:
             block = cv2.resize(block, (0, 0), fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_LINEAR)
             
             # 保存分块到临时文件
-            block_path = os.path.join(os.path.dirname(input_image_path), f"temp_block_{row}_{col}.png")
+            block_path = Path(temp_dir) / f"temp_block_{row}_{col}.png"
             cv2.imwrite(block_path, block)
             
+            # 对分块进行OCR识别
             result = engine(block_path)
             
             # 检查 OCR 结果
@@ -197,12 +205,7 @@ class OCRProcess:
 
         except Exception as e:
             print(f"Error processing block at row {row}, col {col}: {e}")
-            return []  # 返回空结果以继续处理其他分块
-
-        finally:
-            # 确保删除临时分块文件
-            if block_path and os.path.exists(block_path):
-                os.remove(block_path)
+            return []  # 返回空结果以继续处理其他分块  
                 
     def _is_vertical_text(self, box):
         x0, y0 = min(point[0] for point in box), min(point[1] for point in box)
@@ -214,7 +217,7 @@ class OCRProcess:
         # 假设竖向文本的长宽比大于 2
         return height / width > 2
         
-    def get_ocr_result_rapidOCR(self, input_image_path, scale_factor=2, max_block_size=2048, overlap=100):
+    def get_ocr_result_rapidOCR(self, input_image_path, scale_factor=5, max_block_size=1024, overlap=100):
         """
         使用 RapidOCR 进行OCR识别
         :param input_image_path: 输入图片路径
@@ -225,20 +228,22 @@ class OCRProcess:
         try:
             from rapidocr import RapidOCR  
         except ImportError:
-            raise RuntimeError("RapidOCR未安装，请先安装RapidOCR")
+            raise RuntimeError("RapidOCR未安装，请先安装RapidOCR")        
+       
+        # 图像预处理
+        preprocessed_img, _ = self.preprocess_image(input_image_path)        
         
-        # # 图像预处理
-        # preprocessed_img = self.preprocess_image(input_image_path)
-        
-        # # 保存预处理后的图像到临时文件
-        # temp_path = os.path.join(os.path.dirname(input_image_path), "temp_preprocessed.png")
-        # cv2.imwrite(temp_path, preprocessed_img)
-        input_img = cv2.imread(input_image_path)
+        # 保存预处理后的图像到临时文件
+        temp_dir = Path(input_image_path).parent / "temp" / Path(input_image_path).stem    
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_path = Path(temp_dir) / "temp_preprocessed.png"
+        cv2.imwrite(temp_path, preprocessed_img)
+        # input_img = cv2.imread(input_image_path)
         # 初始化 RapidOCR
         engine = RapidOCR()
         
         # 对预处理后的图像进行分块处理
-        height, width = input_img.shape[:2]     
+        height, width = preprocessed_img.shape[:2]     
         all_results = []
         
         # 计算分块数量
@@ -255,13 +260,13 @@ class OCRProcess:
                     start_x = max(0, col * max_block_size - overlap)
                     end_x = min(width, (col + 1) * max_block_size + overlap)
                     
-                    block_result = self._process_block(row, col, input_img, scale_factor, input_image_path, 
+                    block_result = self._process_block(row, col, preprocessed_img, scale_factor, temp_dir, 
                                         engine, start_x, end_x, start_y, end_y)
                     all_results.extend(block_result)
                     
                     # 更新进度条
-                    pbar.update(1)
-
+                    pbar.update(1)        
+        Util.remove_directory(temp_dir)
         # 合并结果并去重
         merged_results = self._merge_overlapping_results(all_results)
         
@@ -874,4 +879,132 @@ class OCRProcess:
                 if text not in content:
                     missing.append(text)
             if missing:
-                raise ValueError(f"未识别文本: {missing}")
+                raise ValueError(f"未识别文本: {missing}")      
+    
+
+    def process_single_file(self, input_path, output_folder, 
+                            scale_factor=5,
+                            max_block_size=1024, 
+                            overlap=100):
+        """
+        处理单个文件的OCR流程
+
+        :param input_path: 输入文件路径
+        :param output_folder: 输出目录
+        :param scale_factor: 放大倍数
+        :param max_block_size: 每个分块的最大尺寸
+        :param overlap: 重叠区域大小
+        :return: (文件路径, 是否成功, 输出文件路径)
+        """
+        try:
+            log_mgr.log_info(f"开始处理文件: {input_path}")
+            Util.validate_image_file(input_path)
+            Util.check_system_resources()                
+
+            os.makedirs(output_folder, exist_ok=True)
+            if not os.access(output_folder, os.W_OK):
+                raise PermissionError(f"输出目录不可写: {output_folder}")
+
+            base_name = Path(input_path).stem      
+            start_time = time.time()
+            # OCR处理       
+            log_mgr.log_info("执行OCR处理...")
+            ocr_process = OCRProcess() 
+            text_positions = ocr_process.get_ocr_result_rapidOCR(input_path, scale_factor, max_block_size, overlap)      
+            log_mgr.log_processing_time("OCR处理", start_time)
+            start_time = time.time()      
+
+            # === 结果整合 ===
+            log_mgr.log_info("输出结果...")
+            final_output = Path(output_folder) / f"output_{base_name}_1.dxf"    
+            dxfProcess.save_to_dxf(str(final_output), [], text_positions, input_path)
+            log_mgr.log_processing_time("结果输出", start_time)
+
+            log_mgr.log_info(f"成功处理文件: {input_path}")
+            log_mgr.log_info(f"结果输出文件: {final_output}")
+
+            return (input_path, True, str(final_output))           
+        except InputError as e:
+            log_mgr.log_exception(f"输入错误: {e}")
+            return (input_path, False, None)
+        except ResourceError as e:
+            log_mgr.log_exception(f"系统资源错误: {e}")
+            raise  # 向上传递严重错误
+        except TimeoutError as e:
+            log_mgr.log_exception(f"处理超时: {e}")
+            return (input_path, False, None)
+        except Exception as e:
+            log_mgr.log_exception(f"未处理的异常发生: {e}")
+            return (input_path, False, None)
+        
+    def ocr_process(self, input_path, output_folder=None, 
+                    scale_factor=10,
+                    max_block_size=512, 
+                    overlap=20):
+            """
+            安全处理单个文件或文件夹的全流程
+
+            :param input_path: 输入文件或文件夹路径
+            :param output_folder: 输出目录
+            :param scale_factor: 放大倍数
+            :param max_block_size: 每个分块的最大尺寸
+            :param overlap: 重叠区域大小
+            :return: 处理结果列表 [(文件路径, 是否成功, 输出文件路径)]
+            """
+            results = []
+            fn_start_time = time.time()  
+
+            setup_logging(console=True)
+            dxfProcess.setup_dxf_logging()
+            
+            # 显示当前配置参数
+            log_mgr.log_info("\n当前OCR识别参数：")
+            log_mgr.log_info(f"├─ 输入图片路径：{input_path}")  
+            log_mgr.log_info(f"├─ 输出目录：{output_folder}")
+            log_mgr.log_info(f"├─ 放大倍数：{scale_factor}")
+            log_mgr.log_info(f"├─ 每个分块的最大尺寸：{max_block_size}")
+            log_mgr.log_info(f"├─ 重叠区域大小：{overlap}")
+
+            # 检查输入路径是文件还是文件夹
+            if os.path.isdir(input_path):
+                # 遍历文件夹中的所有文件
+                for root, _, files in os.walk(input_path):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        result = self.process_single_file(file_path, output_folder)
+                        results.append(result)
+            else:
+                # 处理单个文件
+                result = self.process_single_file(input_path, output_folder)
+                results.append(result)
+
+            log_mgr.log_processing_time(f"总处理时间", fn_start_time)
+            return results
+        
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="ocr 工具")
+    subparsers = parser.add_subparsers(dest='command')
+
+    # 添加 convert 子命令
+    convert_parser = subparsers.add_parser('ocr_process', help='ocr 识别')
+    convert_parser.add_argument('input_file', type=str, help='输入文件(路径)')
+    convert_parser.add_argument('output_path', type=str, help='输出路径')  
+    convert_parser.add_argument('--scale_factor', type=int, default=5, help='放大倍数')
+    convert_parser.add_argument('--max_block_size', type=int, default=1024, help='每个分块的最大尺寸')
+    convert_parser.add_argument('--overlap', type=int, default=20, help='重叠区域大小')
+    
+     # OCR参数组
+    ocr_group = parser.add_argument_group('OCR参数')
+    ocr_group.add_argument('--lang', default='chi_sim+eng',
+                          help="OCR识别语言（默认: chi_sim+eng）")
+    ocr_group.add_argument('--no-ocr', action='store_true',
+                          help="禁用文字识别功能")  
+    # 解析命令行参数
+    args = parser.parse_args()
+
+    ocr_process = OCRProcess()
+    if args.command == 'ocr_process':
+        output_dir = args.output_path or Util.default_output_path(args.input_file, 'ocr')
+        ocr_process.ocr_process(args.input_file, output_dir, args.scale_factor, args.max_block_size, args.overlap)
+    else:
+        print("请输入正确的命令")

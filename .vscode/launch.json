@@ -31,11 +31,14 @@
       "name": "图片OCR",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/src/Image2CAD.py",
+      "program": "${workspaceFolder}/src/ocrProcess.py",
       "args": [
-        "ocrprocess",
-        "D:/Image2CADPy/TestData/11-K2-A1_pdf_images/pdf_page_1.png",
-        ""
+        "ocr_process",
+        "D:/Image2CADPy/TestData/00P2184Combination/page_1.png",
+        "",
+        "--scale_factor=5",
+        "--max_block_size=1024",
+        "--overlap=100"
       ],
       "console": "integratedTerminal"
     },

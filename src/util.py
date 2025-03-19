@@ -3,8 +3,9 @@ import os
 import platform
 import ctypes
 import psutil
+import shutil
 from pathlib import Path
-
+from errors import ProcessingError, InputError, ResourceError, TimeoutError
 class Util:
     @staticmethod
     def get_disk_space(path='/'):
@@ -85,4 +86,39 @@ class Util:
         if not os.path.isfile(file_path):
             print(f"警告: 文件 {file_path} 不存在。")
         else:
-            print(f"文件已存在: {file_path}")    
+            print(f"文件已存在: {file_path}")  
+    
+    @staticmethod        
+    def validate_image_file(input_path: str) -> None:
+        """验证输入文件有效性"""
+        path = Path(input_path)
+        if not path.exists():
+            raise InputError(f"输入文件不存在: {input_path}")
+        if not path.is_file():
+            raise InputError(f"输入路径不是文件: {input_path}")
+        if path.suffix.lower() not in ('.png', '.jpg', '.jpeg', '.tiff', '.tif'):
+            raise InputError(f"不支持的文件格式: {path.suffix}")
+        if path.stat().st_size > 100 * 1024 * 1024:  # 100MB限制
+            raise InputError("文件大小超过100MB限制")
+        
+    @staticmethod
+    def check_system_resources() -> None:
+        """检查系统资源是否充足"""
+        # 示例：检查磁盘空间
+        free_space, _ = Util.get_disk_space_psutil('/')
+        if free_space < 500 * 1024 * 1024:  # 500MB
+            raise ResourceError("磁盘空间不足（需要至少500MB空闲空间）")
+       
+    @staticmethod
+    def default_output_path(input_path, suffix):
+        """生成默认输出路径"""
+        base_dir = Path(input_path).parent / 'output'
+        file_name = Path(input_path).stem.replace(" ", "_")
+        return os.path.join(base_dir, f"{file_name}_{suffix}")    
+    
+    @staticmethod
+    def remove_directory(dir_path):
+        try:           
+            shutil.rmtree(dir_path)           
+        except Exception as e:
+            print(f"Error removing directory {dir_path}: {e}")

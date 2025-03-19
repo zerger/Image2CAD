@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
 from pathlib import Path
 import os
+import sys
 from threading import Lock
 import configparser
+import argparse
 from cryptography.fernet import Fernet
-from logManager import LogManager
+from logManager import LogManager, setup_logging
+from util import Util
+from errors import ProcessingError, InputError, ResourceError, TimeoutError
 
 log_mgr = LogManager().get_instance()
 class ConfigManager:
@@ -276,3 +280,73 @@ class ConfigManager:
         normalized_path = os.path.normpath(cleaned_path)
         return normalized_path
     
+    @staticmethod
+    def check_system_requirements():
+        """系统环境检查"""
+        checks = [
+            ('Tesseract OCR', config_manager.get_tesseract_path()),
+            ('Potrace', config_manager.get_potrace_path()),
+            ('Free Disk Space', Util.get_disk_space('/')[0] > 500*1024*1024),
+            ('Memory', Util.get_memory_info()[1] > 2*1024*1024)  # 2GB以上
+        ]
+    
+        print("\n系统环境检查报告:")
+        for name, status in checks:
+            status_str = "✓ OK" if status else "✗ 缺失"
+            print(f"{name:15} {status_str}")
+
+        if all(status for _, status in checks):
+            print("\n环境检查通过")
+        else:
+            print("\n警告：存在缺失的依赖项")
+    
+if __name__ == "__main__":
+    # 设置命令行参数解析器
+    parser = argparse.ArgumentParser(description="配置工具")
+    # 主命令参数
+    parser.add_argument('action', 
+                        choices=['set-tesseract', 'set-potrace', 'check-env'],
+                        help="""操作选项:    
+    set-tesseract: 设置Tesseract OCR路径
+    set-potrace  : 设置Potrace矢量转换路径
+    check-env    : 检查运行环境配置""")
+    
+    # 通用参数
+    parser.add_argument('input_path', nargs='?', 
+                       help="输入文件/目录路径（对set操作为工具路径）")  
+    parser.add_argument('--config', default='config.ini',
+                       help="指定配置文件路径（默认: ./config.ini）")   
+    try:
+        config_manager = ConfigManager.get_instance()
+        setup_logging()  # 初始化日志
+         
+        args = parser.parse_args()     
+        action = args.action.lower()  
+        if action == 'set-tesseract' and not args.input_path:
+            raise InputError("必须指定Tesseract路径")
+            
+        if action == 'set-potrace' and not args.input_path:
+            raise InputError("必须指定Potrace路径")
+            
+        # 加载配置文件
+        config_manager.load_config(args.config)      
+      
+        # 根据选择的 action 执行       
+        if action == 'set-tesseract':
+            config_manager.set_tesseract_path(args.input_path)
+            log_mgr.log_info(f"Tesseract路径已设置为: {config_manager.get_tesseract_path()}")            
+        elif action == 'set-potrace':
+            config_manager.set_potrace_path(args.input_path)
+            log_mgr.log_info(f"Potrace路径已设置为: {config_manager.get_potrace_path()}")            
+        elif action == 'check-env':
+            config_manager.check_system_requirements()
+        else:
+            print("请输入正确的命令")
+            
+    except argparse.ArgumentError as e:
+        log_mgr.log_error(f"参数错误: {e}")
+        parser.print_help()
+        sys.exit(1)
+    except Exception as e:
+        log_mgr.log_error(f"运行错误: {str(e)}")
+        sys.exit(2)
