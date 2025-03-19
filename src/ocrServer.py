@@ -57,27 +57,25 @@ def ocr_service():
     try:
         # 直接处理二进制数据
         ocr_output = engine(img_bytes)  # 假设返回一个对象
-        print(ocr_output.boxes)      
+        # 结果格式化（根据实际数据结构调整）
+        formatted = []
+        for i in range(len(ocr_output.boxes)):                     
+            formatted.append({
+                "coordinates": box,  # 保持原始坐标结构
+                "text": ocr_output.txts[i],
+                "confidence": ocr_output.scores[i]
+                })      
     except Exception as e:
         logging.error(f"OCR处理失败: {str(e)}")
         return jsonify({"error": f"OCR处理失败: {str(e)}"}), 500
     finally:
-        engine_pool.put(engine)
-
-    # 结果格式化（根据实际数据结构调整）
-    formatted = []
-    for item in result:
-        formatted.append({
-            "coordinates": item[0],  # 保持原始坐标结构
-            "text": item[1],
-            "confidence": float(item[2])
-        })
-
+        engine_pool.put(engine)    
+                
     return jsonify({
-        "result": formatted,
-        "processing_time": elapse,
-        "engine_count": POOL_SIZE
-    })
+            "result": formatted,
+            "processing_time": elapse,
+            "engine_count": POOL_SIZE
+        })
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=9003, threaded=True)
