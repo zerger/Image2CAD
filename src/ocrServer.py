@@ -59,7 +59,8 @@ def ocr_service():
         ocr_output = engine(img_bytes)  # 假设返回一个对象
         # 结果格式化（根据实际数据结构调整）
         formatted = []
-        for i in range(len(ocr_output.boxes)):                     
+        for i in range(len(ocr_output.boxes)):  
+            box = result.boxes[i].astype(float)                   
             formatted.append({
                 "coordinates": box,  # 保持原始坐标结构
                 "text": ocr_output.txts[i],
