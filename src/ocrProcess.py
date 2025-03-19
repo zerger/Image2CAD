@@ -5,6 +5,7 @@ import pytesseract
 import os
 import cv2
 import re
+import tempfile
 from bs4 import BeautifulSoup
 import numpy as np
 from PIL import Image
@@ -17,13 +18,14 @@ from logManager import LogManager, setup_logging
 from errors import ProcessingError, InputError, ResourceError, TimeoutError
 from util import Util
 from dxfProcess import dxfProcess
-
+from rapidocr import RapidOCR
 
 log_mgr = LogManager().get_instance()
 config_manager = ConfigManager.get_instance()
 class OCRProcess:
     def __init__(self):
-        pass
+        # 初始化 RapidOCR
+        self.engine = RapidOCR()
     
     def validate_ocr_env(self):
         """验证OCR环境配置"""
@@ -123,17 +125,23 @@ class OCRProcess:
             print(item)
         return parsed_results, original_height
     
-    def preprocess_image(self, image_path):
+    def preprocess_image_file(self, image_path):
         """
         图像预处理，提高OCR识别效果
         :param image_path: 输入图片路径
         :return: 预处理后的图像
         """
         # 读取图像
-        img = cv2.imread(image_path)
-        
+        img = cv2.imread(image_path)       
+        return self._preprocess_image(img)
+
+    def _preprocess_image(self, img):
         # 1. 图像缩放（如果图片太大）
         max_dimension = 4096  # 最大尺寸
+        if isinstance(img, Image.Image):
+            img = np.array(img)
+        else:
+            img = img  
         height, width = img.shape[:2]
         scale = 1
         # if max(height, width) > max_dimension:
@@ -166,9 +174,9 @@ class OCRProcess:
         )
         
         return binary, scale
-
+    
     def _process_block(self, row, col, preprocessed_img, scale_factor, temp_dir, 
-                       engine, start_x, end_x, start_y, end_y):
+                       start_x, end_x, start_y, end_y):
         block_path = None
         try:
             # 提取分块
@@ -182,7 +190,7 @@ class OCRProcess:
             cv2.imwrite(block_path, block)
             
             # 对分块进行OCR识别
-            result = engine(block_path)
+            result = self.engine(block_path)
             
             # 检查 OCR 结果
             if result is None or not hasattr(result, 'boxes'):
@@ -217,7 +225,7 @@ class OCRProcess:
         # 假设竖向文本的长宽比大于 2
         return height / width > 2
         
-    def get_ocr_result_rapidOCR(self, input_image_path, scale_factor=5, max_block_size=512, overlap=20):
+    def get_file_rapidOCR(self, input_image_path, scale_factor=5, max_block_size=512, overlap=20):
         """
         使用 RapidOCR 进行OCR识别
         :param input_image_path: 输入图片路径
@@ -229,18 +237,42 @@ class OCRProcess:
             from rapidocr import RapidOCR  
         except ImportError:
             raise RuntimeError("RapidOCR未安装，请先安装RapidOCR")        
-       
+
+        img = cv2.imread(image_path)       
+        return self.get_image_rapidOCR(img, scale_factor, max_block_size, overlap, input_image_path)
+    
+    def get_temp_directory(self, input_image_path=None):
+        if input_image_path is None:          
+            temp_dir = tempfile.mkdtemp()           
+        else:
+            # 使用现有逻辑获取路径
+            temp_dir = Path(input_image_path).parent / "temp" / Path(input_image_path).stem
+            temp_dir.mkdir(parents=True, exist_ok=True)           
+
+        return temp_dir
+
+    def get_image_rapidOCR(self, image, scale_factor=5, max_block_size=512, overlap=20, input_image_path = None):
+        """
+        使用 RapidOCR 进行OCR识别
+        :param image: 输入图片
+        :param input_image_path: 输入图片路径
+        :param scale_factor: 放大倍数
+        :param max_block_size: 每个分块的最大尺寸
+        :param overlap: 重叠区域大小
+        """
+        try:
+            from rapidocr import RapidOCR  
+        except ImportError:
+            raise RuntimeError("RapidOCR未安装，请先安装RapidOCR")       
+         
+        original_width, original_height = image.size        
         # 图像预处理
-        preprocessed_img, _ = self.preprocess_image(input_image_path)        
-        
+        preprocessed_img, _ = self._preprocess_image(image)         
         # 保存预处理后的图像到临时文件
-        temp_dir = Path(input_image_path).parent / "temp" / Path(input_image_path).stem    
-        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_dir = self.get_temp_directory(input_image_path)   
         temp_path = Path(temp_dir) / "temp_preprocessed.png"
         cv2.imwrite(temp_path, preprocessed_img)
-        # input_img = cv2.imread(input_image_path)
-        # 初始化 RapidOCR
-        engine = RapidOCR()
+        # input_img = cv2.imread(input_image_path)       
         
         # 对预处理后的图像进行分块处理
         height, width = preprocessed_img.shape[:2]     
@@ -261,7 +293,7 @@ class OCRProcess:
                     end_x = min(width, (col + 1) * max_block_size + overlap)
                     
                     block_result = self._process_block(row, col, preprocessed_img, scale_factor, temp_dir, 
-                                        engine, start_x, end_x, start_y, end_y)
+                                        start_x, end_x, start_y, end_y)
                     all_results.extend(block_result)
                     
                     # 更新进度条
@@ -269,12 +301,9 @@ class OCRProcess:
         # Util.remove_directory(temp_dir)
         # 合并结果并去重
         merged_results = self._merge_overlapping_results(all_results)
-        
-        # 转换为标准格式
-        image = Image.open(input_image_path)
-        original_width, original_height = image.size
         parsed_results = []
         
+        # 转换为标准格式     
         for box, text, score in merged_results:
             x0 = float(min(point[0] for point in box))
             y0 = float(min(point[1] for point in box))
@@ -910,7 +939,7 @@ class OCRProcess:
             # OCR处理       
             log_mgr.log_info("执行OCR处理...")
             ocr_process = OCRProcess() 
-            text_positions = ocr_process.get_ocr_result_rapidOCR(input_path, scale_factor, max_block_size, overlap)      
+            text_positions = ocr_process.get_file_rapidOCR(input_path, scale_factor, max_block_size, overlap)      
             log_mgr.log_processing_time("OCR处理", start_time)
             start_time = time.time()      
 

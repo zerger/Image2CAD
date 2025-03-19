@@ -166,7 +166,7 @@ class ImageApp:
             
             # Initialize OCR processor
             ocr_processor = OCRProcess()
-            self.text_positions, _ = ocr_processor.get_ocr_result_rapidOCR(temp_path, scale_factor=5, max_block_size=512, overlap=20)
+            self.text_positions, _ = ocr_processor.get_file_rapidOCR(temp_path, scale_factor=5, max_block_size=512, overlap=20)
             
             # Display results (for demonstration, just print)
             print("Recognized text positions:", self.text_positions)
