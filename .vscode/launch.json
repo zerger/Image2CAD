@@ -34,7 +34,7 @@
       "program": "${workspaceFolder}/src/ocrProcess.py",
       "args": [
         "ocr_process",
-        "D:/Image2CADPy/TestData/00P2184Combination/page_1.png",
+        "D:/Image2CADPy/TestData/11K2A1/page_1.png",
         "",
         "--scale_factor=4",
         "--max_block_size=512",

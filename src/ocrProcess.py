@@ -263,9 +263,12 @@ class OCRProcess:
         try:
             from rapidocr import RapidOCR  
         except ImportError:
-            raise RuntimeError("RapidOCR未安装，请先安装RapidOCR")       
-         
-        original_width, original_height = image.size        
+            raise RuntimeError("RapidOCR未安装，请先安装RapidOCR")      
+        if isinstance(image, Image.Image):
+            image = np.array(image)
+        else:
+            image = image         
+        original_width, original_height = image.shape[:2]
         # 图像预处理
         preprocessed_img, _ = self._preprocess_image(image)         
         # 保存预处理后的图像到临时文件
@@ -275,22 +278,22 @@ class OCRProcess:
         # input_img = cv2.imread(input_image_path)       
         
         # 对预处理后的图像进行分块处理
-        height, width = preprocessed_img.shape[:2]     
+        processed_height, processed_width = preprocessed_img.shape[:2]     
         all_results = []
         
         # 计算分块数量
-        num_rows = (height + max_block_size - 1) // max_block_size
-        num_cols = (width + max_block_size - 1) // max_block_size    
+        num_rows = (processed_height + max_block_size - 1) // max_block_size
+        num_cols = (processed_width + max_block_size - 1) // max_block_size    
 
         # 使用 tqdm 显示进度条
         total_blocks = num_rows * num_cols
         with tqdm(total=total_blocks, desc="Processing Blocks") as pbar:
             for row in range(num_rows):
                 start_y = max(0, row * max_block_size - overlap)
-                end_y = min(height, (row + 1) * max_block_size + overlap)
+                end_y = min(processed_height, (row + 1) * max_block_size + overlap)
                 for col in range(num_cols):
                     start_x = max(0, col * max_block_size - overlap)
-                    end_x = min(width, (col + 1) * max_block_size + overlap)
+                    end_x = min(processed_width, (col + 1) * max_block_size + overlap)
                     
                     block_result = self._process_block(row, col, preprocessed_img, scale_factor, temp_dir, 
                                         start_x, end_x, start_y, end_y)

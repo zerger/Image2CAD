@@ -22,4 +22,5 @@ matplotlib
 tqdm
 cryptography
 psutil
+paddlepaddle==3.0.0rc1 --index-url https://www.paddlepaddle.org.cn/packages/stable/cpu/
 rapidocr
