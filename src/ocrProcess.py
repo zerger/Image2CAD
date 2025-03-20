@@ -19,6 +19,7 @@ from errors import ProcessingError, InputError, ResourceError, TimeoutError
 from util import Util
 from dxfProcess import dxfProcess
 from rapidocr import RapidOCR
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 log_mgr = LogManager().get_instance()
 config_manager = ConfigManager.get_instance()
@@ -193,9 +194,14 @@ class OCRProcess:
             result = self.engine(block_path)
             
             # 检查 OCR 结果
-            if result is None or not hasattr(result, 'boxes'):
-                print(f"No valid OCR result for block at row {row}, col {col}")
-                return []  # 返回空结果以继续处理其他分块
+            if result is None or not hasattr(result, 'boxes') or result.boxes is None:
+                print(f"Warning: Result is None or does not have 'boxes' at row {row}, col {col}")
+                return []  # 返回一个空列表或其他默认值
+            
+            # 如果 result.boxes 是空的
+            if len(result.boxes) == 0:
+                print(f"Warning: Result boxes is empty at row {row}, col {col}")
+                return []  # 返回一个空列表或其他默认值
             
             # 调整坐标（加上分块的偏移量，并根据放大倍数缩放）
             adjusted_results = []
@@ -213,7 +219,8 @@ class OCRProcess:
 
         except Exception as e:
             print(f"Error processing block at row {row}, col {col}: {e}")
-            return []  # 返回空结果以继续处理其他分块  
+            # 记录更多的调试信息或采取其他措施
+            return []  # 返回一个空列表或其他默认值  
                 
     def _is_vertical_text(self, box):
         x0, y0 = min(point[0] for point in box), min(point[1] for point in box)
@@ -268,7 +275,7 @@ class OCRProcess:
             image = np.array(image)
         else:
             image = image         
-        original_width, original_height = image.shape[:2]
+        original_height, original_width = image.shape[:2]
         # 图像预处理
         preprocessed_img, _ = self._preprocess_image(image)         
         # 保存预处理后的图像到临时文件
@@ -287,6 +294,8 @@ class OCRProcess:
 
         # 使用 tqdm 显示进度条
         total_blocks = num_rows * num_cols
+        # all_results = self.process_blocks_concurrently(preprocessed_img, num_rows, num_cols, 
+        #                                                max_block_size, overlap, scale_factor, temp_dir, show_progress=True)
         with tqdm(total=total_blocks, desc="Processing Blocks") as pbar:
             for row in range(num_rows):
                 start_y = max(0, row * max_block_size - overlap)
@@ -301,7 +310,7 @@ class OCRProcess:
                     
                     # 更新进度条
                     pbar.update(1)        
-        # Util.remove_directory(temp_dir)
+        Util.remove_directory(temp_dir)
         # 合并结果并去重
         merged_results = self._merge_overlapping_results(all_results)
         parsed_results = []
@@ -400,10 +409,17 @@ class OCRProcess:
             if len(current_group) == 1:
                 merged.append(current_group[0])
             else:
-                # 合并重叠的结果
-                merged_box = current_group[0][0]  # 使用置信度最高的框
-                merged_text = max(current_group, key=lambda x: len(x[1]))[1]  # 使用最长的文本
-                merged_score = max(x[2] for x in current_group)  # 使用最高的置信度
+                # 合并所有文本
+                merged_text = "".join(x[1] for x in current_group)
+                # 计算最小包围框
+                merged_box = (
+                    min(min(p[0] for p in box) for box, _, _ in current_group),
+                    min(min(p[1] for p in box) for box, _, _ in current_group),
+                    max(max(p[0] for p in box) for box, _, _ in current_group),
+                    max(max(p[1] for p in box) for box, _, _ in current_group)
+                )
+                # 计算平均置信度
+                merged_score = sum(x[2] for x in current_group) / len(current_group)
                 merged.append((merged_box, merged_text, merged_score))
 
         return merged
@@ -1012,6 +1028,27 @@ class OCRProcess:
 
             log_mgr.log_processing_time(f"总处理时间", fn_start_time)
             return results
+        
+    def process_blocks_concurrently(self, preprocessed_img, num_rows, num_cols, 
+                                    max_block_size, overlap, scale_factor, temp_dir, show_progress=True):
+        all_results = []
+        max_workers = int(config_manager.get_setting(key='max_workers', fallback=os.cpu_count()//2))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
+            for row in range(num_rows):
+                for col in range(num_cols):
+                    start_y = max(0, row * max_block_size - overlap)
+                    end_y = min(preprocessed_img.shape[0], (row + 1) * max_block_size + overlap)
+                    start_x = max(0, col * max_block_size - overlap)
+                    end_x = min(preprocessed_img.shape[1], (col + 1) * max_block_size + overlap)
+                    futures.append(executor.submit(self._process_block, row, col, preprocessed_img, 
+                                                   scale_factor, temp_dir, start_x, end_x, start_y, end_y))
+            
+            # 使用 tqdm 显示进度条
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Processing Blocks", disable=not show_progress):
+                all_results.extend(future.result())
+        
+        return all_results   
         
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ocr 工具")
