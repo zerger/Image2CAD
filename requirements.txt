@@ -20,3 +20,6 @@ func_timeout
 pytesseract
 matplotlib
 tqdm
+cryptography
+psutil
+rapidocr

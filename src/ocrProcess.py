@@ -238,7 +238,7 @@ class OCRProcess:
         except ImportError:
             raise RuntimeError("RapidOCR未安装，请先安装RapidOCR")        
 
-        img = cv2.imread(image_path)       
+        img = cv2.imread(input_image_path)       
         return self.get_image_rapidOCR(img, scale_factor, max_block_size, overlap, input_image_path)
     
     def get_temp_directory(self, input_image_path=None):
