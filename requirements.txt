@@ -5,6 +5,7 @@ redis
 opencv-python
 pillow
 requests
+rdflib==6.0.0
 fitz
 lxml
 bs4
@@ -18,3 +19,4 @@ PyMuPDF
 func_timeout
 pytesseract
 matplotlib
+tqdm
