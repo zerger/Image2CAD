@@ -1,5 +1,5 @@
 #!/bin/bash
-python -m venv image2cad
+python3 -m venv image2cad
 source image2cad/bin/activate
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 
