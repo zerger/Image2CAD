@@ -1008,7 +1008,7 @@ def main():
             pdf_to_images(input_path, output_dir, args.format, args.dpi)
             
         elif action.lower() in {'png2dxf'}:
-            Util.validate_input_path(input_path, allow_imgExt)
+            validate_input_path(input_path, allow_imgExt)
             output_dir = args.output_path or Util.default_output_path(input_path, 'cad')
             if action == 'png2dxf':
                 png_to_dxf(input_path, output_dir)        

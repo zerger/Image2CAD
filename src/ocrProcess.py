@@ -232,7 +232,7 @@ class OCRProcess:
         # 假设竖向文本的长宽比大于 2
         return height / width > 2
         
-    def get_file_rapidOCR(self, input_image_path, scale_factor=5, max_block_size=512, overlap=50):
+    def get_file_rapidOCR(self, input_image_path, scale_factor=5):
         """
         使用 RapidOCR 进行OCR识别
         :param input_image_path: 输入图片路径
@@ -246,7 +246,7 @@ class OCRProcess:
             raise RuntimeError("RapidOCR未安装，请先安装RapidOCR")        
 
         img = cv2.imread(input_image_path)       
-        return self.get_image_rapidOCR(img, scale_factor, max_block_size, overlap, input_image_path)
+        return self.get_image_rapidOCR(img, scale_factor, input_image_path)
     
     def get_temp_directory(self, input_image_path=None):
         if input_image_path is None:          
@@ -258,23 +258,17 @@ class OCRProcess:
 
         return temp_dir
 
-    def get_image_rapidOCR(self, image, scale_factor=5, max_block_size=512, overlap=50, input_image_path = None):
-        """
-        使用 RapidOCR 进行OCR识别
-        :param image: 输入图片
-        :param input_image_path: 输入图片路径
-        :param scale_factor: 放大倍数
-        :param max_block_size: 每个分块的最大尺寸
-        :param overlap: 重叠区域大小
-        """
+    def get_image_rapidOCR(self, image, scale_factor=5, input_image_path=None):
         try:
-            from rapidocr import RapidOCR  
+            from rapidocr import RapidOCR
         except ImportError:
-            raise RuntimeError("RapidOCR未安装，请先安装RapidOCR")      
+            raise RuntimeError("RapidOCR未安装，请先安装RapidOCR")
+
         if isinstance(image, Image.Image):
             image = np.array(image)
         else:
-            image = image         
+            image = image
+
         original_height, original_width = image.shape[:2]
         # 图像预处理
         preprocessed_img, _ = self._preprocess_image(image)         
@@ -282,64 +276,66 @@ class OCRProcess:
         temp_dir = self.get_temp_directory(input_image_path)   
         temp_path = Path(temp_dir) / "temp_preprocessed.png"
         cv2.imwrite(temp_path, preprocessed_img)
-        # input_img = cv2.imread(input_image_path)       
-        
-        # 对预处理后的图像进行分块处理
-        processed_height, processed_width = preprocessed_img.shape[:2]     
-        all_results = []
-        
-        # 计算分块数量
-        num_rows = (processed_height + max_block_size - 1) // max_block_size
-        num_cols = (processed_width + max_block_size - 1) // max_block_size    
 
-        # 使用 tqdm 显示进度条
-        total_blocks = num_rows * num_cols
-        # all_results = self.process_blocks_concurrently(preprocessed_img, num_rows, num_cols, 
-        #                                                max_block_size, overlap, scale_factor, temp_dir, show_progress=True)
-        with tqdm(total=total_blocks, desc="Processing Blocks") as pbar:
-            for row in range(num_rows):
-                start_y = max(0, row * max_block_size - overlap)
-                end_y = min(processed_height, (row + 1) * max_block_size + overlap)
-                for col in range(num_cols):
-                    start_x = max(0, col * max_block_size - overlap)
-                    end_x = min(processed_width, (col + 1) * max_block_size + overlap)
-                    
-                    block_result = self._process_block(row, col, preprocessed_img, scale_factor, temp_dir, 
-                                        start_x, end_x, start_y, end_y)
-                    all_results.extend(block_result)
-                    
-                    # 更新进度条
-                    pbar.update(1)        
-        Util.remove_directory(temp_dir)
-        # 合并结果并去重
-        merged_results = self._merge_overlapping_results(all_results)
+        # Step 1: Text Detection
+        engine = RapidOCR()
+        log_mgr.log_info("执行OCR检测处理...")
+        start_time = time.time()
+        detection_results = engine(temp_path, use_det=True, use_cls=False, use_rec=False)
+        detection_time = time.time() - start_time
+        log_mgr.log_info(f"OCR检测处理时间: {detection_time:.2f}秒")
+        
+        # Step 3: Text Recognition with Progress Bar
         parsed_results = []
-        
-        # 转换为标准格式     
-        for box, text, score in merged_results:
-            x0 = float(min(point[0] for point in box))
-            y0 = float(min(point[1] for point in box))
-            x1 = float(max(point[0] for point in box))
-            y1 = float(max(point[1] for point in box))
-            
-            # 计算宽度和高度
-            width = x1 - x0
-            height = y1 - y0     
-            
-            # 转换坐标
-            x, y, width, height = self.convert_to_dxf_coords(x0, y0, x1, y1, original_height)
-            if self._is_vertical_text(box):
-                x = x + width                
-                new_width = height
-                new_height = width   
-                angle = 90
-            else:
-                new_width = width
-                new_height = height   
-                angle = 0      
-            # 添加到结果列表
-            parsed_results.append((text, x, y, new_width, new_height, angle))
-        
+        index = 0
+        log_mgr.log_info("执行OCR识别处理...")
+        start_time = time.time()
+        with tqdm(total=len(detection_results.boxes), desc="Recognizing Text", unit="region") as pbar:
+            for i, (box, score) in enumerate(zip(detection_results.boxes, detection_results.scores)):
+                x0 = int(min(point[0] for point in box))
+                y0 = int(min(point[1] for point in box))
+                x1 = int(max(point[0] for point in box))
+                y1 = int(max(point[1] for point in box))
+                text_region = image[y0:y1, x0:x1]  # 裁剪文本区域
+                # Optionally scale the region for better recognition
+                scaled_region = cv2.resize(text_region, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_LINEAR)
+                index += 1
+                block_path = Path(temp_dir) / f"temp_block_{index}.png"
+                cv2.imwrite(block_path, scaled_region)
+                # Recognize text in the cropped region
+                recognition_results = engine(block_path, use_det=False, use_cls=True, use_rec=True)
+                
+                # 假设 recognition_results 是一个 RapidOCROutput 对象
+                if recognition_results is not None:
+                    if hasattr(recognition_results, 'txts') and hasattr(recognition_results, 'scores'):
+                        for text, score in zip(recognition_results.txts, recognition_results.scores):
+                            # Calculate width and height
+                            width = x1 - x0
+                            height = y1 - y0
+
+                            # Convert coordinates
+                            x, y, width, height = self.convert_to_dxf_coords(x0, y0, x1, y1, original_height)
+                            if self._is_vertical_text(box):
+                                x = x + width
+                                new_width = height
+                                new_height = width
+                                angle = 90
+                            else:
+                                new_width = width
+                                new_height = height
+                                angle = 0
+
+                            # Add to results
+                            parsed_results.append((text, x, y, new_width, new_height, angle))
+                    else:
+                        print("Error: recognition_results does not have the required attributes.")
+                
+                # Update the progress bar
+                pbar.update(1)
+        recognition_time = time.time() - start_time
+        log_mgr.log_info(f"OCR识别处理时间: {recognition_time:.2f}秒")
+
+        Util.remove_directory(temp_dir)
         return parsed_results, original_height
         
     def _merge_overlapping_results(self, results):
@@ -931,9 +927,7 @@ class OCRProcess:
     
 
     def process_single_file(self, input_path, output_folder, 
-                            scale_factor=4,
-                            max_block_size=512, 
-                            overlap=50):
+                            scale_factor=4):
         """
         处理单个文件的OCR流程
 
@@ -958,7 +952,7 @@ class OCRProcess:
             # OCR处理       
             log_mgr.log_info("执行OCR处理...")
             ocr_process = OCRProcess() 
-            text_positions = ocr_process.get_file_rapidOCR(input_path, scale_factor, max_block_size, overlap)      
+            text_positions = ocr_process.get_file_rapidOCR(input_path, scale_factor)      
             log_mgr.log_processing_time("OCR处理", start_time)
             start_time = time.time()      
 
@@ -1058,9 +1052,7 @@ if __name__ == "__main__":
     convert_parser = subparsers.add_parser('ocr_process', help='ocr 识别')
     convert_parser.add_argument('input_file', type=str, help='输入文件(路径)')
     convert_parser.add_argument('output_path', type=str, help='输出路径')  
-    convert_parser.add_argument('--scale_factor', type=int, default=4, help='放大倍数')
-    convert_parser.add_argument('--max_block_size', type=int, default=512, help='每个分块的最大尺寸')
-    convert_parser.add_argument('--overlap', type=int, default=50, help='重叠区域大小')
+    convert_parser.add_argument('--scale_factor', type=int, default=4, help='放大倍数')  
     
      # OCR参数组
     ocr_group = parser.add_argument_group('OCR参数')
@@ -1074,6 +1066,6 @@ if __name__ == "__main__":
     ocr_process = OCRProcess()
     if args.command == 'ocr_process':
         output_dir = args.output_path or Util.default_output_path(args.input_file, 'ocr')
-        ocr_process.ocr_process(args.input_file, output_dir, args.scale_factor, args.max_block_size, args.overlap)
+        ocr_process.ocr_process(args.input_file, output_dir, args.scale_factor)
     else:
         print("请输入正确的命令")

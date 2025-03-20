@@ -36,9 +36,7 @@
         "ocr_process",
         "D:/Image2CADPy/TestData/11K2A1/page_1.png",
         "",
-        "--scale_factor=2",
-        "--max_block_size=1024",
-        "--overlap=100"  
+        "--scale_factor=2"       
       ],
       "console": "integratedTerminal"
     },
