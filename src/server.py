@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import FileResponse
 import os
 import shutil
@@ -12,21 +12,36 @@ OUTPUT_DIR = "outputs"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+allow_imgExt = ConfigManager.get_allow_imgExt()
+    
 @app.post("/upload/image/")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...), task_name: str = Form(...)):
+    if task_name != "png_to_dxf" and task_name != "ocr_image":
+        return {"error": "Unknown task type"}
+    if not Util.validate_input_path(file.filename, allow_imgExt):
+        return {"error": "Invalid file type"}
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-
-    output_dxf = os.path.join(OUTPUT_DIR, file.filename.replace(".png", ".dxf"))
-
-    # 异步执行 CAD 处理任务
-    task = process_cad_image.delay(file_path, output_dxf)
+        
+    if task_name == "png_to_dxf":
+        output_dxf = os.path.join(OUTPUT_DIR, file.filename.replace(".png", "_dxf"))
+        # 异步执行 CAD 处理任务
+        task = process_cad_image.delay(file_path, output_dxf)    
+    elif task_name == "ocr_image":
+        output_ocr = os.path.join(OUTPUT_DIR, file.filename.replace(".png", "_ocr"))
+        task = ocr_image.delay(file_path, output_ocr)
+    else:
+        return {"error": "Unknown task type"}
 
     return {"task_id": task.id, "message": "Processing started"}
 
 @app.post("/upload/pdf/")
-async def upload_pdf(file: UploadFile = File(...)):
+async def upload_pdf(file: UploadFile = File(...), task_name: str = Form(...)):
+    if task_name != "pdf_to_images":
+        return {"error": "Unknown task type"}
+    if not Util.validate_input_path(file.filename, [.pdf]):
+        return {"error": "Invalid file type"}
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)

@@ -47,7 +47,7 @@ import tqdm
 print_lock = threading.Lock()  
 log_mgr = LogManager().get_instance()
 config_manager = ConfigManager.get_instance()
-allowed_ext = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff'}
+allow_imgExt = ConfigManager.get_allow_imgExt()
 
 def retry(max_attempts: int = 3, delay: int = 1):
     """重试装饰器"""
@@ -851,7 +851,7 @@ def png_to_dxf(input_path, output_folder=None):
         # 遍历文件夹中的所有 PNG 文件
         process_files_in_parallel(input_path, output_folder)             
     # 如果输入是文件
-    elif os.path.isfile(input_path) and Util.has_valid_files(input_path, allowed_ext):
+    elif os.path.isfile(input_path) and Util.has_valid_files(input_path, allow_imgExt):
         # 如果没有指定输出文件夹，则使用输入文件的目录
         if output_folder is None:
             output_folder = Util.default_output_path(input_path, 'cad')
@@ -954,24 +954,6 @@ def process_geometry_for_centerline(simplified_polygon, interpolation_distance=0
         print(f"Error calculating centerlines: {e}")
         return  
 
-# 辅助函数
-def validate_input_path(args, allowed_ext):
-    """验证输入路径有效性"""
-    path = args.input_path
-    if not os.path.exists(path):
-        raise InputError(f"输入路径不存在: {path}")
-    if args.action == 'pdf2images' and not path.lower().endswith('.pdf'):
-        raise InputError("PDF转换需要.pdf文件")
-    if args.action == 'png2dxf':        
-        input_path = Path(path)
-        if not input_path.exists():
-            raise ValueError(f"输入路径不存在: {path}")        
-        if not Util.has_valid_files(input_path, allowed_ext):
-            raise ValueError(
-                f"路径中未找到支持的图像文件（允许的扩展名：{', '.join(allowed_ext)}）\n"
-                f"输入路径：{input_path}"
-                )
-
 def main():    
     # 设置命令行参数解析器
     parser = argparse.ArgumentParser(
@@ -1012,24 +994,24 @@ def main():
         args = parser.parse_args()
         setup_logging()  # 初始化日志
         action = args.action.lower()
+        input_path = args.input_path
         # 参数验证
-        if action in ['pdf2images', 'png2dxf'] and not args.input_path:
+        if action in ['pdf2images', 'png2dxf'] and not input_path:
             raise InputError("必须指定输入路径")  
             
         # 加载配置文件
-        config_manager.load_config(args.config)      
-      
+        config_manager.load_config(args.config)   
         # 根据选择的 action 执行
         if action == 'pdf2images':
-            validate_input_path(args, ['.pdf'])
-            output_dir = args.output_path or Util.default_output_path(args.input_path, 'pdf_images')
-            pdf_to_images(args.input_path, output_dir, args.format, args.dpi)
+            Util.validate_input_path(input_path, ['.pdf'])
+            output_dir = args.output_path or Util.default_output_path(input_path, 'pdf_images')
+            pdf_to_images(input_path, output_dir, args.format, args.dpi)
             
         elif action.lower() in {'png2dxf'}:
-            validate_input_path(args, ['.png', '.jpg', '.jpeg'])
-            output_dir = args.output_path or Util.default_output_path(args.input_path, 'cad')
+            Util.validate_input_path(input_path, allow_imgExt)
+            output_dir = args.output_path or Util.default_output_path(input_path, 'cad')
             if action == 'png2dxf':
-                png_to_dxf(args.input_path, output_dir)        
+                png_to_dxf(input_path, output_dir)        
         else:
             print("请输入正确的命令")
             

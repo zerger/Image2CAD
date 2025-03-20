@@ -39,6 +39,11 @@ class ConfigManager:
     def _decrypt_value(value: str) -> str:
         return ConfigManager._cipher.decrypt(value.encode()).decode()
     
+    @staticmethod
+    def get_allow_imgExt():
+        """从初始化配置中获取允许的图片扩展名"""
+        return allowed_ext = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff'}
+    
     def __init__(self):
         """初始化配置"""
         if not self._initialized:

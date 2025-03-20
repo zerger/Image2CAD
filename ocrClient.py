@@ -25,8 +25,8 @@ from concurrent.futures import ThreadPoolExecutor
 if __name__ == "__main__":  
     scale_factor=5
     max_block_size=512
-    overlap=20
+    overlap=50
     with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(test_ocr, 'D:/Image2CADPy/TestData/1.png', scale_factor, max_block_size, overlap) for _ in range(10)]
+        futures = [executor.submit(test_ocr, 'D:/Image2CADPy/TestData/pdfImages/pdf_page_1.png', scale_factor, max_block_size, overlap) for _ in range(10)]
         results = [f.result() for f in futures]
         print(results)

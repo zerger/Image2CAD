@@ -91,11 +91,13 @@ def ocr_service():
                 })        
     except Exception as e:        
         log_mgr.log_exception(f"OCR处理失败: {e}")
-        return jsonify({"error": f"OCR处理失败: {str(e)}"}), 500
+        return jsonify({"status": "error", 
+                        "error": f"OCR处理失败: {str(e)}"}), 500
     finally:
         engine_pool.put(ocr_process)
 
     return jsonify({
+        "status": "success",
         "result": formatted,
         "processing_time": elapse,
         "engine_count": POOL_SIZE

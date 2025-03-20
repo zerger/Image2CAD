@@ -10,21 +10,20 @@ async def ws_client():
         response = await ws.recv()
         print(response)
         
-def upload_file(file_path, upload_url):
+def upload_file(file_path, upload_url, task_name):
     with open(file_path, "rb") as f:
-        response = requests.post(upload_url, files={"file": f})
+        response = requests.post(upload_url, files={"file": f}, data={"task_name": task_name})
         
         # 打印响应状态码和内容以进行调试
         print("Response status code:", response.status_code)
-        print("Response content:", response.text)
-        
+        print("Response content:", response.text)        
         # 检查 HTTP 错误
         response.raise_for_status()
-
-        
         # 检查响应的内容类型是否为 JSON
         if response.headers.get('Content-Type') == 'application/json':
             json_response = response.json()
+            if json_response.get("error"):
+                raise ValueError(json_response.get("error"))
             return json_response.get("task_id")
         else:
             print("Unexpected content type:", response.headers.get('Content-Type'))
@@ -57,6 +56,9 @@ if __name__ == "__main__":
     elif task_type == "pdf_to_images":
         upload_url = f"http://{server_ip}:8000/uploads/pdf/"
         download_filename = "test_images.zip"
+    elif task_type == "ocr_image":
+        upload_url = f"http://{server_ip}:8000/uploads/image/"
+        download_filename = "test_ocr.json"
     elif task_type == "ws_client":
         asyncio.run(ws_client())
         sys.exit(1)
@@ -64,7 +66,7 @@ if __name__ == "__main__":
         print("未知的任务类型")
         sys.exit(1)
 
-    task_id = upload_file(file_path, upload_url)
+    task_id = upload_file(file_path, upload_url, task_type)
     print(f"Task ID: {task_id}")
 
     poll_task_status(server_ip, task_id)

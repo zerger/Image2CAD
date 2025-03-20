@@ -225,7 +225,7 @@ class OCRProcess:
         # 假设竖向文本的长宽比大于 2
         return height / width > 2
         
-    def get_file_rapidOCR(self, input_image_path, scale_factor=5, max_block_size=512, overlap=20):
+    def get_file_rapidOCR(self, input_image_path, scale_factor=5, max_block_size=512, overlap=50):
         """
         使用 RapidOCR 进行OCR识别
         :param input_image_path: 输入图片路径
@@ -251,7 +251,7 @@ class OCRProcess:
 
         return temp_dir
 
-    def get_image_rapidOCR(self, image, scale_factor=5, max_block_size=512, overlap=20, input_image_path = None):
+    def get_image_rapidOCR(self, image, scale_factor=5, max_block_size=512, overlap=50, input_image_path = None):
         """
         使用 RapidOCR 进行OCR识别
         :param image: 输入图片
