@@ -239,7 +239,7 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
 
 # 将 PNG 转换为 PBM 格式
 def convert_png_to_pbm(png_path, pbm_path):
-    img = cv2.imread(png_path)  
+    img = Util.opencv_read(png_path)  
     if img is None:
         raise ValueError(f"Failed to read the image at {png_path}. Please check the file path or format.")
     # 将图像转换为灰度图
@@ -257,7 +257,7 @@ def convert_png_to_pbm(png_path, pbm_path):
         if w < 3 or h < 3:  # 忽略宽度或高度小于 3 的区域
             cv2.drawContours(binary_img, [contour], -1, 0, -1)
     
-    cv2.imwrite(pbm_path, binary_img)   
+    Util.opencv_write(binary_img, pbm_path)   
     
 # 合并近似的线段
 def merge_lines_with_hough(lines, padding=0):
@@ -656,7 +656,7 @@ def convert_pbm_to_dxf(pbm_path, dxf_path):
 
 def preprocess_image(image_path):
     # 读取灰度图
-    image = cv2.imread(image_path)
+    image = Util.opencv_read(image_path)
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
     # OTSU 二值化

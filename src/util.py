@@ -4,6 +4,8 @@ import platform
 import ctypes
 import psutil
 import shutil
+import cv2
+import numpy as np
 from pathlib import Path
 from errors import ProcessingError, InputError, ResourceError, TimeoutError
 class Util:
@@ -126,4 +128,23 @@ class Util:
         for p in path.rglob('*'):
             if p.is_file() and p.suffix.lower() in allow_Exts:
                 return True
-        return False           
+        return False  
+    
+    @staticmethod
+    def opencv_read(input_image_path):       
+        with open(input_image_path, 'rb') as f:
+            file_bytes = np.asarray(bytearray(f.read()), dtype=np.uint8)       
+            img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)     
+            return img
+        return None
+     
+    @staticmethod        
+    def opencv_write(img, output_image_path, ext='.png'):
+        success, encoded_image = cv2.imencode(ext, img)
+        if success:            
+            image_bytes = encoded_image.tobytes()            
+            with open(output_image_path, 'wb') as f:
+                f.write(image_bytes)
+                print("Image saved successfully")
+        else:
+            print("Failed to encode image")

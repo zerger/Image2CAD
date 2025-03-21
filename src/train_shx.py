@@ -279,7 +279,7 @@ class TrainSHX_data:
     @staticmethod
     def generate_box_file(image_path, box_file_path, min_width=5, min_height=5):
         # 读取图像
-        image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        image = Util.opencv_read(image_path)
         image_height = image.shape[0]
         # 二值化图像
         _, thresh = cv2.threshold(image, 128, 255, cv2.THRESH_BINARY_INV)

@@ -7,6 +7,7 @@ from tkinter import Tk, Button, Canvas, PhotoImage, Scale, HORIZONTAL, font
 from PIL import Image, ImageTk
 import threading
 from ocrProcess import OCRProcess 
+from util import Util
 import uuid
 from pathlib import Path
 import tempfile
@@ -18,7 +19,7 @@ class ImageApp:
         
         # Load image
         self.image_path = image_path
-        self.original_image = cv2.imread(image_path)
+        self.original_image = Util.opencv_read(image_path)
         self.display_image = self.original_image.copy()
         self.photo = None
         
@@ -162,7 +163,7 @@ class ImageApp:
             # Create a temporary file for the selected region
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
                 temp_path = temp_file.name
-                cv2.imwrite(temp_path, selected_region)
+                Util.opencv_write(selected_region, temp_path)
             
             # Initialize OCR processor
             ocr_processor = OCRProcess()

@@ -10,7 +10,7 @@
         "pdf2images",
         "D:/Image2CADPy/TestData/11-K2-A1(第1页).pdf",
         "",
-        "--dpi=800",
+        "--dpi=300",
         "--format=png"
       ],
       "console": "integratedTerminal"
@@ -34,7 +34,7 @@
       "program": "${workspaceFolder}/src/ocrProcess.py",
       "args": [
         "ocr_process",
-        "D:/Image2CADPy/TestData/11K2A1/page_1.png",
+        "D:/Image2CADPy/TestData/output/11-K2-A1(第1页)_pdf_images/pdf_page_1.png",
         "",
         "--scale_factor=2"       
       ],

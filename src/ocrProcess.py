@@ -61,7 +61,7 @@ class OCRProcess:
 
     @staticmethod
     def ensure_white_background(img_path, output_path):
-        img = cv2.imread(img_path)
+        img = Util.opencv_read(img_path)
 
         # 如果是彩色图像，先转换为灰度
         if len(img.shape) == 3:
@@ -81,7 +81,7 @@ class OCRProcess:
             img = cv2.bitwise_not(img)
 
         # 保存处理后的图片
-        cv2.imwrite(output_path, img)
+        Util.opencv_write(img, output_path)
         
     def get_ocr_result_tesseract(self, input_path, output_folder, min_confidence=70, max_height_diff=5, verbose=False):
         """
@@ -139,7 +139,7 @@ class OCRProcess:
         :return: 预处理后的图像
         """
         # 读取图像
-        img = cv2.imread(image_path)       
+        img = Util.opencv_read(image_path)       
         return self._preprocess_image(img)
 
     def _preprocess_image(self, img):
@@ -194,7 +194,7 @@ class OCRProcess:
             
             # 保存分块到临时文件
             block_path = Path(temp_dir) / f"temp_block_{row}_{col}.png"
-            cv2.imwrite(block_path, block)
+            Util.opencv_write(block, block_path)
             
             # 对分块进行OCR识别
             result = self.engine(block_path, use_det=True, use_cls=False, use_rec=False)
@@ -248,9 +248,10 @@ class OCRProcess:
         try:
             from rapidocr import RapidOCR  
         except ImportError:
-            raise RuntimeError("RapidOCR未安装，请先安装RapidOCR")        
-
-        img = cv2.imread(input_image_path)       
+            raise RuntimeError("RapidOCR未安装，请先安装RapidOCR")     
+        img = Util.opencv_read(input_image_path)
+        if img is None:
+            raise ValueError("图像读取失败")
         return self.get_image_rapidOCR(img, scale_factor, bPreprocess, bAutoBlock, input_image_path)
     
     def get_temp_directory(self, input_image_path=None):
@@ -303,7 +304,7 @@ class OCRProcess:
          # 保存预处理后的图像到临时文件
         temp_dir = self.get_temp_directory(input_image_path)   
         temp_path = Path(temp_dir) / "temp_preprocessed.png"
-        cv2.imwrite(temp_path, preprocessed_img)
+        Util.opencv_write(preprocessed_img, temp_path)
 
         # Step 1: Text Detection      
         log_mgr.log_info("执行OCR检测处理...")
@@ -387,7 +388,7 @@ class OCRProcess:
                 scaled_region = cv2.resize(text_region, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_LINEAR)
                 index += 1
                 block_path = Path(temp_dir) / f"temp_block_{index}.png"
-                cv2.imwrite(block_path, scaled_region)
+                Util.opencv_write(scaled_region, block_path)
                 # Recognize text in the cropped region
                 recognition_results = self.engine(block_path, use_det=False, use_cls=True, use_rec=True)
                 
@@ -601,7 +602,7 @@ class OCRProcess:
         tesseract_exe = config_manager.get_tesseract_path()
 
         # 读取图像
-        image = cv2.imread(input_path)
+        image = Util.opencv_read(input_path)
         H, W = image.shape[:2]  # 原始图像尺寸
 
         # 配置 Tesseract 参数
@@ -1009,7 +1010,7 @@ class OCRProcess:
                 raise ValueError(f"未识别文本: {missing}")      
     
 
-    def process_single_file(self, input_path, output_folder, scale_factor=4):
+    def process_single_file(self, input_path, output_folder, scale_factor=4, bPreprocess=False, bAutoBlock=False):
         """
         处理单个文件的OCR流程
 
@@ -1032,7 +1033,7 @@ class OCRProcess:
             # OCR处理       
             log_mgr.log_info("执行OCR处理...")
             ocr_process = OCRProcess() 
-            text_positions = ocr_process.get_file_rapidOCR(input_path, scale_factor)      
+            text_positions = ocr_process.get_file_rapidOCR(input_path, scale_factor, bPreprocess, bAutoBlock)      
             log_mgr.log_processing_time("OCR处理", start_time)
             start_time = time.time()      
 
@@ -1059,7 +1060,7 @@ class OCRProcess:
             log_mgr.log_exception(f"未处理的异常发生: {e}")
             return (input_path, False, None)
         
-    def ocr_process(self, input_path, output_folder=None, scale_factor=4):
+    def ocr_process(self, input_path, output_folder=None, scale_factor=4, bPreprocess=False, bAutoBlock=False):
         """
         安全处理单个文件或文件夹的全流程
 
@@ -1079,6 +1080,8 @@ class OCRProcess:
         log_mgr.log_info(f"├─ 输入图片路径：{input_path}")  
         log_mgr.log_info(f"├─ 输出目录：{output_folder}")
         log_mgr.log_info(f"├─ 放大倍数：{scale_factor}")           
+        log_mgr.log_info(f"├─ 是否预处理：{bPreprocess}")
+        log_mgr.log_info(f"├─ 是否自动分块：{bAutoBlock}")
 
         # 检查输入路径是文件还是文件夹
         if os.path.isdir(input_path):
@@ -1086,11 +1089,11 @@ class OCRProcess:
             for root, _, files in os.walk(input_path):
                 for file in files:
                     file_path = os.path.join(root, file)
-                    result = self.process_single_file(file_path, output_folder)
+                    result = self.process_single_file(file_path, output_folder, scale_factor, bPreprocess, bAutoBlock)
                     results.append(result)
         else:
             # 处理单个文件
-            result = self.process_single_file(input_path, output_folder, scale_factor)
+            result = self.process_single_file(input_path, output_folder, scale_factor, bPreprocess, bAutoBlock)
             results.append(result)
 
         log_mgr.log_processing_time(f"总处理时间", fn_start_time)
@@ -1141,6 +1144,6 @@ if __name__ == "__main__":
     ocr_process = OCRProcess()
     if args.command == 'ocr_process':
         output_dir = args.output_path or Util.default_output_path(args.input_file, 'ocr')
-        ocr_process.ocr_process(args.input_file, output_dir, args.scale_factor)
+        ocr_process.ocr_process(args.input_file, output_dir, args.scale_factor, args.bPreprocess, args.bAutoBlock)
     else:
         print("请输入正确的命令")

@@ -11,6 +11,7 @@ import platform
 import argparse
 from lxml import etree
 from typing import Tuple
+from util import Util
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from shapely.geometry import Polygon, MultiPolygon, MultiLineString, LineString, box
@@ -374,10 +375,8 @@ class dxfProcess:
                 print(f"获取图像尺寸失败: {str(e)}")
                 raise
 
-        except ImportError:
-            # 回退到OpenCV方法
-            import cv2
-            img = cv2.imread(image_path)
+        except ImportError:           
+            img = Util.opencv_read(image_path)
             if img is not None:
                 return img.shape[1], img.shape[0]  # (width, height)
             raise ValueError("无法读取图像文件")
@@ -429,11 +428,10 @@ class dxfProcess:
     @staticmethod
     def _preprocess_image_effects(image_path, contrast=1.0, brightness=1.0):
         """为旧版本DXF预处理图像效果"""
-        try:
-            import cv2
-            img = cv2.imread(image_path)
+        try:           
+            img = Util.opencv_read(image_path)
             img = cv2.convertScaleAbs(img, alpha=contrast*2.5, beta=(brightness-0.5)*100)
-            cv2.imwrite(image_path, img)
+            Util.opencv_write(img, image_path)
         except ImportError:
             print("警告：需要OpenCV进行图像预处理")
         
