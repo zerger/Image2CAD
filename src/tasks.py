@@ -20,4 +20,7 @@ def convert_pdf_to_images(pdf_path, output_dir=None, dpi=None):
 def ocr_image(image_path, scale_factor=5, max_block_size=512, overlap=20, output_path=None):
     print(f"ocr Processing {image_path} -> {output_path}")
     ocr_process = OCRProcess()
-    ocr_process.get_image_rapidOCR(image_path, scale_factor, max_block_size, overlap, output_path)
+    parsed_results, original_height = ocr_process.get_file_rapidOCR(image_path)
+    print(parsed_results)
+    print("ocr_image finished")
+    return parsed_results, original_height
