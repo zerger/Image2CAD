@@ -117,13 +117,41 @@ class Util:
             print(f"Error removing directory {dir_path}: {e}")
             
     @staticmethod    
-    def validate_extname(path, allow_Exts):
-        """验证输入路径有效性"""   
-        path = Path(path)
-        if path.is_file():
-            return path.suffix.lower() in allow_Exts
+    def validate_extname(file_name, allow_Exts, is_file=True):
+        """
+        Validate if the file extension is in the allowed list.
+        
+        Args:
+            file_name (str): Name or path of the file to validate
+            allow_Exts (list): List of allowed file extensions (e.g. ['.jpg', '.png'])
+            is_file (bool): If True, treat input as file path and check if file exists.
+                            If False, only validate the extension string.
+        
+        Returns:
+            bool: True if extension is allowed, False otherwise
+        
+        Example:
+            >>> validate_extname('test.jpg', ['.jpg', '.png'])
+            True
+            >>> validate_extname('test.gif', ['.jpg', '.png']) 
+            False
+        """
+        """验证输入路径有效性""" 
+    
+        if is_file:
+            path = Path(path)
+            if path.is_file():
+                return path.suffix.lower() in allow_Exts
 
-        for p in path.rglob('*'):
-            if p.is_file() and p.suffix.lower() in allow_Exts:
-                return True
-        return False           
+            for p in path.rglob('*'):
+                if p.is_file() and p.suffix.lower() in allow_Exts:
+                    return True
+        else:
+            # 将文件名转换为小写
+            file_name = file_name.lower()
+
+            # 获取文件后缀
+            suffix = '.' + file_name.split('.')[-1] if '.' in file_name else ''
+
+            # 检查后缀是否在允许的扩展名列表中
+            return suffix in allow_Exts      
