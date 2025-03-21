@@ -16,6 +16,24 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 allow_imgExt = ConfigManager.get_allow_imgExt()
     
+def get_outputDir(fileAllowExt, file_path, task_name):
+    def get_dir_name(file_name, fileAllowExt, dir_suffix):
+        dir_name = file_name
+        for ext in fileAllowExt:
+            if dir_name.endswith(ext):
+                dir_name = dir_name.replace(ext, dir_suffix)
+                break  # 找到匹配的扩展名后可以退出循环
+        return  os.path.join(OUTPUT_DIR, dir_name)
+    filename = os.path.basename(file_path)
+    if task_name == "png_to_dxf":
+        return get_dir_name(filename, fileAllowExt, "_dxf")       
+    elif task_name == "ocr_image":
+        return get_dir_name(filename, fileAllowExt, "_ocr")               
+    elif task_name == "pdf_to_images":
+        return get_dir_name(filename, fileAllowExt, "_images")    
+    else:
+        return None
+        
 @app.post("/upload/image/ocr/")
 async def upload_ocr_image(file: UploadFile = File(...), task_name: str = Form(...)):
     if task_name != "ocr_image":
@@ -37,59 +55,35 @@ async def upload_ocr_image(file: UploadFile = File(...), task_name: str = Form(.
 async def upload_file(file: UploadFile = File(...), task_name: str = Form(...)):
     if task_name != "png_to_dxf" and task_name != "ocr_image":
         return {"error": "Unknown task type"}
-    if not Util.validate_extname(file.filename, allow_imgExt):
+    if not Util.validate_extname(file, allow_imgExt):
         return {"error": "Invalid file type"}
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
         
-    if task_name == "png_to_dxf":
-        output_dxf = os.path.join(OUTPUT_DIR, file.filename.replace(".png", "_dxf"))
-        # 异步执行 CAD 处理任务
-        task = process_cad_image.delay(file_path, output_dxf)    
-    elif task_name == "ocr_image":
-        output_ocr = os.path.join(OUTPUT_DIR, file.filename.replace(".png", "_ocr"))
-        task = ocr_image.delay(file_path, output_ocr)
+    output_dir = get_outputDir(allow_imgExt, file_path, task_name)
+    if task_name == "png_to_dxf":        
+        task = process_cad_image.delay(file_path, output_dir)    
+    elif task_name == "ocr_image":       
+        task = ocr_image.delay(file_path, output_dir)
     else:
         return {"error": "Unknown task type"}
 
     return {"task_id": task.id, "message": "Processing started"}
 
-"""
-    Upload and process PDF file to convert into images.
-
-    Args:
-        file (UploadFile): The PDF file to be uploaded and processed
-        task_name (str): Task type identifier, must be "pdf_to_images"
-
-    Returns:
-        dict: Contains task_id and status message
-            - task_id: ID of the async conversion task
-            - message: Processing status message
-            - error: Error message if validation fails
-
-    Raises:
-        None
-
-    Notes:
-        - Validates file extension and task type
-        - Saves uploaded PDF to UPLOAD_DIR
-        - Creates output directory for images
-        - Triggers async PDF to images conversion task
-"""
 @app.post("/upload/pdf/")
 async def upload_pdf(file: UploadFile = File(...), task_name: str = Form(...)):
     if task_name != "pdf_to_images":
         return {"error": "Unknown task type"}
-    if not Util.validate_extname(file.filename, [".pdf"]):
+    if not Util.validate_extname(file, [".pdf"]):
         return {"error": "Invalid file type"}
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-
-    output_images_dir = os.path.join(OUTPUT_DIR, file.filename.replace(".pdf", "_images"))
+    
+    output_dir = get_outputDir({".pdf"}, file_path, task_name)
     # 异步执行 PDF 转换任务
-    task = convert_pdf_to_images.delay(file_path, output_images_dir)
+    task = convert_pdf_to_images.delay(file_path, output_dir)
 
     return {"task_id": task.id, "message": "PDF to images processing started"}
 
