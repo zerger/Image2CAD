@@ -119,6 +119,7 @@ class Util:
     @staticmethod    
     def validate_extname(path, allow_Exts):
         """验证输入路径有效性"""   
+        path = Path(path)
         if path.is_file():
             return path.suffix.lower() in allow_Exts
 
