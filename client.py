@@ -48,16 +48,16 @@ if __name__ == "__main__":
     file_path = sys.argv[2]  # 上传的文件路径
 
     # 修改为服务器的实际 IP 地址
-    server_ip = "123.56.161.124"
+    server_ip = "10.0.101.60"
 
     if task_type == "png_to_dxf":
-        upload_url = f"http://{server_ip}:8000/uploads/image/"
+        upload_url = f"http://{server_ip}:8000/upload/image/"
         download_filename = "test.dxf"
     elif task_type == "pdf_to_images":
-        upload_url = f"http://{server_ip}:8000/uploads/pdf/"
+        upload_url = f"http://{server_ip}:8000/upload/pdf/"
         download_filename = "test_images.zip"
     elif task_type == "ocr_image":
-        upload_url = f"http://{server_ip}:8000/uploads/image/"
+        upload_url = f"http://{server_ip}:8000/upload/image/"
         download_filename = "test_ocr.json"
     elif task_type == "ws_client":
         asyncio.run(ws_client())

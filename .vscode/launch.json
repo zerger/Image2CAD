@@ -113,7 +113,7 @@
       "request": "launch",
       "program": "${workspaceFolder}/client.py",
       "args": [
-        "png_to_dxf",
+        "ocr_image",
         "D:/Image2CADPy/TestData/1.png"
       ],
       "console": "integratedTerminal"

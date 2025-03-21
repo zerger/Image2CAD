@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-from ctypes import util
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import FileResponse
 import os
@@ -38,7 +37,7 @@ async def upload_ocr_image(file: UploadFile = File(...), task_name: str = Form(.
 async def upload_file(file: UploadFile = File(...), task_name: str = Form(...)):
     if task_name != "png_to_dxf" and task_name != "ocr_image":
         return {"error": "Unknown task type"}
-    if not util.validate_input_path(file.filename, allow_imgExt):
+    if not Util.validate_extname(file.filename, allow_imgExt):
         return {"error": "Invalid file type"}
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     with open(file_path, "wb") as buffer:
@@ -82,7 +81,7 @@ async def upload_file(file: UploadFile = File(...), task_name: str = Form(...)):
 async def upload_pdf(file: UploadFile = File(...), task_name: str = Form(...)):
     if task_name != "pdf_to_images":
         return {"error": "Unknown task type"}
-    if not Util.validate_input_path(file.filename, [".pdf"]):
+    if not Util.validate_extname(file.filename, [".pdf"]):
         return {"error": "Invalid file type"}
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     with open(file_path, "wb") as buffer:

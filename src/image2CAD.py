@@ -1003,12 +1003,12 @@ def main():
         config_manager.load_config(args.config)   
         # 根据选择的 action 执行
         if action == 'pdf2images':
-            Util.validate_input_path(input_path, ['.pdf'])
+            Util.validate_extname(input_path, ['.pdf'])
             output_dir = args.output_path or Util.default_output_path(input_path, 'pdf_images')
             pdf_to_images(input_path, output_dir, args.format, args.dpi)
             
         elif action.lower() in {'png2dxf'}:
-            validate_input_path(input_path, allow_imgExt)
+            Util.validate_extname(input_path, allow_imgExt)
             output_dir = args.output_path or Util.default_output_path(input_path, 'cad')
             if action == 'png2dxf':
                 png_to_dxf(input_path, output_dir)        

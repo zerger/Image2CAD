@@ -54,14 +54,7 @@ class Util:
         path = Path(path)
         if not path.exists():
             return False
-
-        if path.is_file():
-            return path.suffix.lower() in extensions
-
-        for p in path.rglob('*'):
-            if p.is_file() and p.suffix.lower() in extensions:
-                return True
-        return False
+        return Util.validate_extname(path.name, extensions)
     
     @staticmethod
     def ensure_directory_exists(directory_path):
@@ -124,19 +117,12 @@ class Util:
             print(f"Error removing directory {dir_path}: {e}")
             
     @staticmethod    
-    def validate_input_path(path, allow_Exts):
-        """验证输入路径有效性"""    
-        if not os.path.exists(path):
-            print(f"输入路径不存在: {path}")  
-            return False
-            input_path = Path(path)
-            if not input_path.exists():
-                print(f"输入路径不存在: {path}")  
-                return False      
-            if not Util.has_valid_files(input_path, allow_Exts):
-                print(
-                    f"路径中未找到支持的文件（允许的扩展名：{', '.join(allowed_ext)}）\n"
-                    f"输入路径：{input_path}"
-                    )
-                return False
-        return True
+    def validate_extname(path, allow_Exts):
+        """验证输入路径有效性"""   
+        if path.is_file():
+            return path.suffix.lower() in allow_Exts
+
+        for p in path.rglob('*'):
+            if p.is_file() and p.suffix.lower() in allow_Exts:
+                return True
+        return False           
