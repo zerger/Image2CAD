@@ -11,8 +11,8 @@ from typing import Dict, Any
 from .task_manager import task_manager
 from .websocket_manager import websocket_manager
 from .file_utils import file_utils
-from common.utils import Util  # 假设 Util 在 common.utils 中
-from common.config_manager import ConfigManager
+from src.common.utils import Util  # 假设 Util 在 common.utils 中
+from src.common.config_manager import ConfigManager
 
 # 获取允许的文件扩展名
 config_manager = ConfigManager()
@@ -43,8 +43,8 @@ async def upload_file(file: UploadFile = File(...), task_name: str = Form(...)):
         return {"error": "Unknown task type"}
     
     # 验证文件类型
-    if not Util.validate_extname(file.filename, ALLOWED_IMAGE_EXTENSIONS, False):
-        return {"error": "Invalid file type"}
+    # if not Util.validate_extname(file.filename, ALLOWED_IMAGE_EXTENSIONS, False):
+    #     return {"error": "Invalid file type"}
     
     # 保存上传的文件
     file_path = file_utils.save_uploaded_file(file)

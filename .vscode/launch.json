@@ -5,18 +5,17 @@
       "name": "FastAPI服务",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/src/server/server.py",
+      "program": "${workspaceFolder}/src/server.py",
       "args": [],
       "console": "integratedTerminal",
       "justMyCode": true,
       "env": {
-        "PYTHONPATH": "${workspaceFolder}/src",
+        "PYTHONPATH": "${workspaceFolder}",
         "PORT": "8000",
         "HOST": "0.0.0.0",
         "RELOAD": "true"
       },
       "cwd": "${workspaceFolder}",
-      "stopOnEntry": false,
       "serverReadyAction": {
         "pattern": ".*Uvicorn running on (http://[^\\s]+)",
         "uriFormat": "%s/",

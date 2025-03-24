@@ -180,7 +180,7 @@ class Util:
             print("Failed to validate image file")            
                     
     @staticmethod
-    def validate_extname(file_input, allowed_exts):
+    def validate_extname(file_input, allowed_exts, is_file=True):
         """验证文件扩展名"""
         try:
             # 处理 UploadFile 对象

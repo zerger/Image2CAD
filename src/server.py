@@ -4,7 +4,14 @@
 启动FastAPI应用并配置中间件
 """
 import os
+import sys
+from pathlib import Path
 import uvicorn
+
+# 添加项目根目录到Python路径
+project_root = str(Path(__file__).parent.parent)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -28,7 +35,8 @@ app.add_middleware(
 
 # 挂载静态文件目录
 static_dir = os.path.join(os.path.dirname(__file__), "..", "static")
-app.mount("/static", StaticFiles(directory=static_dir), name="static")
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # 注册路由
 app.include_router(router)
@@ -53,4 +61,4 @@ if __name__ == "__main__":
     port = config.get_server_port()
     
     # 启动服务器
-    uvicorn.run("src.server.server:app", host=host, port=port, reload=True)
+    uvicorn.run("src.server:app", host=host, port=port, reload=True)

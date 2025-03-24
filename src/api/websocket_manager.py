@@ -7,7 +7,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
-from tasks.celery_tasks import app as celery_app
+from src.tasks.celery_tasks import app as celery_app
 
 class WebSocketManager:
     """WebSocket连接管理器，处理任务进度的实时通知"""
