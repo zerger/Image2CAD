@@ -23,7 +23,7 @@ def get_outputDir(fileAllowExt, file_path, task_name):
             if dir_name.endswith(ext):
                 dir_name = dir_name.replace(ext, dir_suffix)
                 break  # 找到匹配的扩展名后可以退出循环
-        return  os.path.join(OUTPUT_DIR, dir_name)
+        return  os.path.abspath(os.path.join(OUTPUT_DIR, dir_name))
     filename = os.path.basename(file_path)
     if task_name == "png_to_dxf":
         return get_dir_name(filename, fileAllowExt, "_dxf")       
@@ -34,30 +34,13 @@ def get_outputDir(fileAllowExt, file_path, task_name):
     else:
         return None
         
-@app.post("/upload/image/ocr/")
-async def upload_ocr_image(file: UploadFile = File(...), task_name: str = Form(...)):
-    if task_name != "ocr_image":
-        return {"error": "Unknown task type"}
-    file_path = os.path.abspath(os.path.join(UPLOAD_DIR, file.filename))
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    output_images_dir = os.path.abspath(os.path.join(OUTPUT_DIR, file.filename.replace(".png", "_images")))
-    print(file_path)
-    print(output_images_dir)
-
-    # 异步执行 OCR 识别任务
-    task = ocr_image.delay(file_path, output_images_dir)
-
-    return {"task_id": task.id, "message": "ocr_image processing started"}
-
 @app.post("/upload/image/")
 async def upload_file(file: UploadFile = File(...), task_name: str = Form(...)):
     if task_name != "png_to_dxf" and task_name != "ocr_image":
         return {"error": "Unknown task type"}
-    if not Util.validate_extname(file, allow_imgExt):
+    if not Util.validate_extname(file.filename, allow_imgExt, False):
         return {"error": "Invalid file type"}
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
+    file_path = os.path.abspath(os.path.join(UPLOAD_DIR, file.filename))
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
         
@@ -75,7 +58,7 @@ async def upload_file(file: UploadFile = File(...), task_name: str = Form(...)):
 async def upload_pdf(file: UploadFile = File(...), task_name: str = Form(...)):
     if task_name != "pdf_to_images":
         return {"error": "Unknown task type"}
-    if not Util.validate_extname(file, [".pdf"]):
+    if not Util.validate_extname(file, [".pdf"], False):
         return {"error": "Invalid file type"}
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     with open(file_path, "wb") as buffer:
