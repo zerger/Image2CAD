@@ -7,7 +7,7 @@ import cv2
 import psutil
 import shutil
 from pathlib import Path
-from errors import ProcessingError, InputError, ResourceError, TimeoutError
+from src.common.errors import ProcessingError, InputError, ResourceError, TimeoutError
 from typing import Union
 
 class Util:
