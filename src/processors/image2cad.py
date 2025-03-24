@@ -32,14 +32,19 @@ import shutil
 import time
 import sys
 import threading
-from Centerline.geometry import Centerline
-from ocrProcess import OCRProcess
-from dxfProcess import dxfProcess
-from configManager import ConfigManager
-from errors import ProcessingError, InputError, ResourceError, TimeoutError
-from util import Util
-from logManager import LogManager, setup_logging
-from train_shx import TrainSHX_data
+import sys
+import os
+# 添加项目根目录到 Python 路径
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from src.Centerline.geometry import Centerline
+from src.processors.ocr_processor import OCRProcess
+from src.processors.dxf_processor import dxfProcess
+from src.common.config_manager import ConfigManager
+from src.common.errors import ProcessingError, InputError, ResourceError, TimeoutError
+from src.common.utils import Util
+from src.common.log_manager import LogManager, setup_logging
+from src.training.train_shx import TrainSHX_data
 from shapely.validation import make_valid
 import tqdm    
 

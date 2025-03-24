@@ -14,7 +14,7 @@ fi
 
 # 启动 Celery worker
 echo "Starting Celery worker..."
-celery -A tasks worker --loglevel=info --detach
+celery -A src.server.tasks worker --loglevel=info --detach
 
 # 检查 Celery worker 是否启动成功
 if [ $? -eq 0 ]; then
@@ -26,7 +26,7 @@ fi
 
 # 启动 FastAPI 应用
 echo "Starting FastAPI application..."
-uvicorn src.server:app --host 0.0.0.0 --port 8000 --reload &
+uvicorn src.server.server:app --host 0.0.0.0 --port 8000 --reload &
 
 # 检查 FastAPI 应用是否启动成功
 if [ $? -eq 0 ]; then

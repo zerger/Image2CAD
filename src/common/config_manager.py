@@ -6,9 +6,9 @@ from threading import Lock
 import configparser
 import argparse
 from cryptography.fernet import Fernet
-from logManager import LogManager, setup_logging
-from util import Util
-from errors import ProcessingError, InputError, ResourceError, TimeoutError
+from common.log_manager import LogManager, setup_logging
+from common.utils import Util
+from common.errors import ProcessingError, InputError, ResourceError, TimeoutError
 
 log_mgr = LogManager().get_instance()
 class ConfigManager:
@@ -300,6 +300,18 @@ class ConfigManager:
         # 使用 os.path.normpath 规范化路径
         normalized_path = os.path.normpath(cleaned_path)
         return normalized_path
+    
+    def get_server_host(self) -> str:
+        """获取服务器主机地址"""
+        return self.get_setting('server_host', fallback='127.0.0.1')
+    
+    def get_server_port(self) -> int:
+        """获取服务器端口"""
+        return int(self.get_setting('server_port', fallback=8000))
+    
+    def get_file_retention_days(self) -> int:
+        """获取文件保留天数"""
+        return int(self.get_setting('file_retention_days', fallback=7))
     
     @staticmethod
     def check_system_requirements():

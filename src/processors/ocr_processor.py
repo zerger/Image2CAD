@@ -13,11 +13,16 @@ from rtree import index
 from tqdm import tqdm
 import time
 import argparse
-from configManager import ConfigManager, log_mgr
-from logManager import LogManager, setup_logging
-from errors import ProcessingError, InputError, ResourceError, TimeoutError
-from util import Util
-from dxfProcess import dxfProcess
+import sys
+import os
+# 添加项目根目录到 Python 路径
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from src.common.config_manager import ConfigManager
+from src.common.log_manager import LogManager, setup_logging
+from src.common.errors import ProcessingError, InputError, ResourceError, TimeoutError
+from src.common.utils import Util
+from src.processors.dxf_processor import dxfProcess
 from rapidocr import RapidOCR
 from concurrent.futures import ThreadPoolExecutor, as_completed
 

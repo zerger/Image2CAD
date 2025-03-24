@@ -5,12 +5,12 @@
       "name": "FastAPI服务",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/src/server.py",
+      "program": "${workspaceFolder}/src/server/server.py",
       "args": [],
       "console": "integratedTerminal",
       "justMyCode": true,
       "env": {
-        "PYTHONPATH": "${workspaceFolder}",
+        "PYTHONPATH": "${workspaceFolder}/src",
         "PORT": "8000",
         "HOST": "0.0.0.0",
         "RELOAD": "true"
@@ -30,7 +30,7 @@
       "module": "celery",
       "args": [
         "-A",
-        "src.tasks",
+        "src.tasks.celery_tasks",
         "worker",
         "--pool=solo",
         "--loglevel=debug",
@@ -41,7 +41,7 @@
       "console": "integratedTerminal",
       "justMyCode": false,
       "env": {
-        "PYTHONPATH": "${workspaceFolder}/src",
+        "PYTHONPATH": "${workspaceFolder}",
         "REDIS_HOST": "localhost",
         "REDIS_PORT": "6379",
         "REDIS_DB": "0",
@@ -56,10 +56,10 @@
       "name": "PDF转图片",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/src/Image2CAD.py",
+      "program": "${workspaceFolder}/src/processors/image2cad.py",
       "args": [
         "pdf2images",
-        "D:/Image2CADPy/TestData/11-K2-A1(第1页).pdf",
+        "${workspaceFolder}/TestData/00 P2184 Combination.pdf",
         "",
         "--dpi=300",
         "--format=png"
@@ -73,7 +73,7 @@
       "program": "${workspaceFolder}/src/Image2CAD.py",
       "args": [
         "png2dxf",
-        "D:/Image2CADPy/TestData/11-K2-A1_pdf_images/pdf_page_1.png",
+        "${workspaceFolder}/uploads/temp/pdf_page_1/pdf_page_1.png",
         ""
       ],
       "console": "integratedTerminal"
@@ -82,10 +82,10 @@
       "name": "图片OCR",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/src/ocrProcess.py",
+      "program": "${workspaceFolder}/src/processors/ocr_processor.py",
       "args": [
         "ocr_process",
-        "D:/Image2CADPy/TestData/output/11-K2-A1(第1页)_pdf_images/pdf_page_1.png",
+        "${workspaceFolder}/uploads/temp/pdf_page_1/pdf_page_1.png",
         "",
         "--scale_factor=2"       
       ],
@@ -95,9 +95,9 @@
         "name": "图片App",
         "type": "debugpy",
         "request": "launch",
-        "program": "${workspaceFolder}/src/imageApp.py",
+        "program": "${workspaceFolder}/src/ui/image_app.py",
         "args": [      
-            "D:/Image2CADPy/TestData/11-K2-A1_pdf_images/pdf_page_1.png",   
+            "${workspaceFolder}/uploads/temp/pdf_page_1/pdf_page_1.png",   
         ],
         "console": "integratedTerminal"
     },
@@ -105,7 +105,7 @@
       "name": "训练shx数据",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/src/train_shx.py",
+      "program": "${workspaceFolder}/src/training/train_shx.py",
       "args": [
         "train_tesseract"
       ],
@@ -151,10 +151,10 @@
       "name": "设置Tesseract",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/src/Image2CAD.py",
+      "program": "${workspaceFolder}/src/processors/image2cad.py",
       "args": [
         "set-tesseract",
-        "E:/Program Files/Tesseract-OCR/tesseract.exe"
+        "/usr/bin/tesseract"
       ],
       "console": "integratedTerminal"
     },
@@ -165,7 +165,7 @@
       "program": "${workspaceFolder}/client.py",
       "args": [
         "ocr_image",
-        "D:/Image2CADPy/TestData/1.png"
+        "${workspaceFolder}/TestData/00 P2184 Combination.pdf"
       ],
       "console": "integratedTerminal"
     },
@@ -176,8 +176,8 @@
       "args": [],
       "stopAtEntry": false,
       "externalConsole": true,
-      "cwd": "d:/Image2CADPy/src",
-      "program": "d:/Image2CADPy/src/build/Debug/outDebug",
+      "cwd": "${workspaceFolder}/src",
+      "program": "${workspaceFolder}/src/build/Debug/outDebug",
       "MIMode": "gdb",
       "miDebuggerPath": "gdb",
       "setupCommands": [
