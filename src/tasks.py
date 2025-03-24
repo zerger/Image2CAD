@@ -6,6 +6,17 @@ from image2CAD import pdf_to_images, png_to_dxf
 from celery.signals import task_revoked
 app = Celery('tasks', broker='redis://localhost:6379/0', backend='redis://localhost:6379/0')
 
+# 配置Celery
+app.conf.update(
+    broker_connection_retry_on_startup=True,  # 在启动时重试连接代理
+    broker_connection_max_retries=10,         # 最大重试次数
+    task_serializer='json',                   # 任务序列化格式
+    accept_content=['json'],                  # 接受的内容类型
+    result_serializer='json',                 # 结果序列化格式
+    timezone='Asia/Shanghai',                 # 时区设置
+    enable_utc=False,                         # 不使用UTC
+)
+
 @task_revoked.connect
 def handle_task_revoked(sender=None, request=None, terminated=None, signum=None, expired=None, **kwargs):
     """处理任务被撤销的情况"""
