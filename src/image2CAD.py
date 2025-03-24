@@ -130,10 +130,8 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         start_time = time.time()
         # OCR处理       
         log_mgr.log_info("执行OCR处理...")
-        ocr_process = OCRProcess()
-        # ocr_process.verify_chinese_recognition()  
-        # ocr_process.get_ocr_result_paddle(input_path)
-        text_positions = ocr_process.get_ocr_result_tesseract(input_path, output_folder, min_confidence=70, max_height_diff=10)
+        ocr_process = OCRProcess()      
+        text_positions = ocr_process.get_file_rapidOCR(input_path, scale_factor=2) 
         log_mgr.log_processing_time("OCR处理", start_time)
         start_time = time.time()
         
@@ -153,7 +151,7 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         # === 阶段4：后处理 ===       
         log_mgr.log_info("提取多边形...")
         polygons = None
-        # polygons = dxfProcess.extract_polygons_from_dxf(str(output_dxf), show_progress=True)
+        polygons = dxfProcess.extract_polygons_from_dxf(str(output_dxf), show_progress=True)
         log_mgr.log_processing_time("多边形提取", start_time)
         start_time = time.time()     
         
@@ -242,8 +240,13 @@ def convert_png_to_pbm(png_path, pbm_path):
     img = Util.opencv_read(png_path)  
     if img is None:
         raise ValueError(f"Failed to read the image at {png_path}. Please check the file path or format.")
-    # 将图像转换为灰度图
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # 检查图像通道数并相应处理
+    if len(img.shape) == 2:
+        # 图像已经是单通道（灰度图）
+        gray = img
+    else:
+        # 图像是彩色的，需要转换为灰度图
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     # 使用阈值操作将图像转换为黑白图像
     _, binary_img = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
     # skeleton = skeletonize(binary_img)
@@ -638,9 +641,14 @@ def convert_pbm_to_dxf(pbm_path, dxf_path):
             stderr=subprocess.PIPE,
             text=True
         ) 
-          # 二次验证输出文件
+        # 检查执行结果
+        if result.returncode != 0:
+            print(f"Potrace 错误输出: {result.stderr}")
+            print(f"Potrace 标准输出: {result.stdout}")
+            raise RuntimeError(f"矢量化执行失败，返回码: {result.returncode}")
+        # 二次验证输出文件
         if not os.path.exists(dxf_path):
-            raise FileNotFoundError(f"DXF文件生成失败: {dxf_path}")
+            raise FileNotFoundError(f"DXF转换失败: {dxf_path}")
             
         return True 
     except subprocess.CalledProcessError as e:

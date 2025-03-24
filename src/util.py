@@ -8,6 +8,8 @@ import psutil
 import shutil
 from pathlib import Path
 from errors import ProcessingError, InputError, ResourceError, TimeoutError
+from typing import Union
+
 class Util:
     @staticmethod
     def get_disk_space(path='/'):
@@ -56,7 +58,7 @@ class Util:
         path = Path(path)
         if not path.exists():
             return False
-        return Util.validate_extname(path.name, extensions)
+        return Util.validate_extname(path, extensions)
     
     @staticmethod
     def ensure_directory_exists(directory_path):
@@ -136,41 +138,43 @@ class Util:
         else:
             print("Failed to encode image")
                     
-    @staticmethod    
-    def validate_extname(file_name, allow_Exts, is_file=True):   
-        """
-        Validate if the file extension is in the allowed list.
-        
-        Args:
-            file_name (str): Name or path of the file to validate
-            allow_Exts (list): List of allowed file extensions (e.g. ['.jpg', '.png'])
-            is_file (bool): If True, treat input as file path and check if file exists.
-                            If False, only validate the extension string.
-        
-        Returns:
-            bool: True if extension is allowed, False otherwise
-        
-        Example:
-            >>> validate_extname('test.jpg', ['.jpg', '.png'])
-            True
-            >>> validate_extname('test.gif', ['.jpg', '.png']) 
-            False
-        """
-        """验证输入路径有效性"""      
-        if is_file:
-            file_name = file_name(file_name)
-            if file_name.is_file():
-                return file_name.suffix.lower() in allow_Exts
+    @staticmethod
+    def validate_extname(file_input, allowed_exts, is_file=True):
+        """验证文件扩展名"""
+        try:
+            # 处理 UploadFile 对象
+            if hasattr(file_input, 'filename'):
+                filename = file_input.filename
+            else:
+                filename = str(file_input)
 
-            for p in file_name.rglob('*'):
-                if p.is_file() and p.suffix.lower() in allow_Exts:
-                    return True
-        else:
-            # 将文件名转换为小写
-            file_name = file_name.lower()
+            # 统一路径分隔符并转换为绝对路径
+            path = Path(filename).absolute()
+            
+            # 确保所有扩展名都是小写
+            allowed_exts = [ext.lower() for ext in allowed_exts]
+            
+            if is_file:
+                # 检查文件是否存在
+                if not path.exists():
+                    print(f"File does not exist: {path}")
+                    return False
+                
+                # 获取文件扩展名并检查
+                file_ext = path.suffix.lower()
+                if file_ext not in allowed_exts:
+                    print(f"Invalid extension: {file_ext}, allowed: {allowed_exts}")
+                    return False
+                return True
+            
+            # 仅验证扩展名
+            file_ext = path.suffix.lower()
+            if not file_ext:
+                print(f"No extension found in filename: {filename}")
+                return False
+            
+            return file_ext in allowed_exts
 
-            # 获取文件后缀
-            suffix = '.' + file_name.split('.')[-1] if '.' in file_name else ''
-
-            # 检查后缀是否在允许的扩展名列表中
-            return suffix in allow_Exts 
+        except Exception as e:
+            print(f"Error validating file extension: {e}")
+            return False 
