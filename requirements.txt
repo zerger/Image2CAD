@@ -1,5 +1,6 @@
 fastapi
 uvicorn
+websockets>=10.0
 celery
 redis
 opencv-python

@@ -1,5 +1,20 @@
+# IDE specific files
 Image2CAD/.spyproject
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+.idea/
 
+# Virtual environment
+image2cad/
+
+# Project specific
+TestData/pdfImages/
+*.exe
+*.dll
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -139,3 +154,35 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+# Visual Studio files
+*.sln
+*.vcxproj.user
+*.vcxproj.filters
+*.pdb
+*.ilk
+*.obj
+*.exp
+*.lib
+Debug/
+Release/
+x64/
+Win32/
+
+# Docker
+.dockerignore
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
