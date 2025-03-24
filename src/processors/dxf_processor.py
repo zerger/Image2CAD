@@ -13,8 +13,6 @@ from lxml import etree
 from typing import Tuple
 import sys
 import os
-# 添加项目根目录到 Python 路径
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.common.utils import Util
 import xml.etree.ElementTree as ET

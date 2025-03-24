@@ -6,9 +6,9 @@ from threading import Lock
 import configparser
 import argparse
 from cryptography.fernet import Fernet
-from common.log_manager import LogManager, setup_logging
-from common.utils import Util
-from common.errors import ProcessingError, InputError, ResourceError, TimeoutError
+from src.common.log_manager import LogManager, setup_logging
+from src.common.utils import Util
+from src.common.errors import ProcessingError, InputError, ResourceError, TimeoutError
 
 log_mgr = LogManager().get_instance()
 class ConfigManager:

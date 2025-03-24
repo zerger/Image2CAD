@@ -9,11 +9,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-import sys
-import os
-# 添加项目根目录到 Python 路径
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 from api.routes import router
 from tasks.celery_tasks import app as celery_app
 from common.config_manager import ConfigManager

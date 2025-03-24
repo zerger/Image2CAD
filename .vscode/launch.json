@@ -64,7 +64,11 @@
         "--dpi=300",
         "--format=png"
       ],
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+    }
+      
     },
     {
       "name": "PNG矢量化",
@@ -76,7 +80,10 @@
         "${workspaceFolder}/uploads/temp/pdf_page_1/pdf_page_1.png",
         ""
       ],
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+    }
     },
     {
       "name": "图片OCR",
@@ -89,7 +96,10 @@
         "",
         "--scale_factor=2"       
       ],
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+    }
     },
     {
         "name": "图片App",
@@ -99,7 +109,10 @@
         "args": [      
             "${workspaceFolder}/uploads/temp/pdf_page_1/pdf_page_1.png",   
         ],
-        "console": "integratedTerminal"
+        "console": "integratedTerminal",
+        "env": {
+          "PYTHONPATH": "${workspaceFolder}"
+      }
     },
     {
       "name": "训练shx数据",
@@ -109,7 +122,10 @@
       "args": [
         "train_tesseract"
       ],
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+    }
     },
     {
       "name": "生成训练数据",
@@ -121,7 +137,10 @@
         "D:/Image2CADPy/src/characterset/",
         "D:/Image2CADPy/tesseract_train/"
       ],
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+    }
     },
     {
       "name": "生成训练box",
@@ -133,19 +152,25 @@
         "D:/Image2CADPy/TestData/chinese_test.png",
         "D:/Image2CADPy/TestData/chinese_test.box"
       ],
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+    }
     },
     {
       "name": "dxf导出txt",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/src/dxfprocess.py",
+      "program": "${workspaceFolder}/src/processors/dxf_processor.py",
       "args": [
         "export_dxf_to_txt",
         "D:/Image2CADPy/TestData/pdfImages/output/pdf_page_51.dxf",
         "D:/Image2CADPy/TestData/pdf_page_51_dxf_output.txt"
       ],
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+    }
     },
     {
       "name": "设置Tesseract",
@@ -156,7 +181,10 @@
         "set-tesseract",
         "/usr/bin/tesseract"
       ],
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+    }
     },
     {
       "name": "服务访问",
@@ -167,7 +195,10 @@
         "ocr_image",
         "${workspaceFolder}/TestData/00 P2184 Combination.pdf"
       ],
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+    }
     },
     {
       "name": "C/C++ Runner: Debug Session",

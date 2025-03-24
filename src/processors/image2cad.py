@@ -32,10 +32,6 @@ import shutil
 import time
 import sys
 import threading
-import sys
-import os
-# 添加项目根目录到 Python 路径
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.Centerline.geometry import Centerline
 from src.processors.ocr_processor import OCRProcess

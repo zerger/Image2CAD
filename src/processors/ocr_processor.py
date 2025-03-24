@@ -13,10 +13,6 @@ from rtree import index
 from tqdm import tqdm
 import time
 import argparse
-import sys
-import os
-# 添加项目根目录到 Python 路径
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.common.config_manager import ConfigManager
 from src.common.log_manager import LogManager, setup_logging

@@ -7,8 +7,8 @@ import cv2
 import psutil
 import shutil
 from pathlib import Path
-from src.common.errors import ProcessingError, InputError, ResourceError, TimeoutError
 from typing import Union
+from src.common.errors import ProcessingError, InputError, ResourceError, TimeoutError
 
 class Util:
     @staticmethod
@@ -53,6 +53,11 @@ class Util:
         return usage.free, usage.total
     
     @staticmethod
+    def get_allow_imgExt():
+        """从初始化配置中获取允许的图片扩展名"""
+        return {'.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', ".webp"}
+    
+    @staticmethod
     def has_valid_files(path, extensions):
         """递归检查目录或文件是否包含指定扩展名的文件"""
         path = Path(path)
@@ -88,15 +93,34 @@ class Util:
     @staticmethod        
     def validate_image_file(input_path: str) -> None:
         """验证输入文件有效性"""
-        path = Path(input_path)
-        if not path.exists():
-            raise InputError(f"输入文件不存在: {input_path}")
-        if not path.is_file():
-            raise InputError(f"输入路径不是文件: {input_path}")
-        if path.suffix.lower() not in ('.png', '.jpg', '.jpeg', '.tiff', '.tif'):
-            raise InputError(f"不支持的文件格式: {path.suffix}")
-        if path.stat().st_size > 100 * 1024 * 1024:  # 100MB限制
-            raise InputError("文件大小超过100MB限制")
+        try:
+            # 1. path 变量在 else 分支中定义，但在 if 分支中未定义
+            if hasattr(input_path, 'filename'):
+                filename = input_path.filename
+                path = Path(filename)
+            else:
+                filename = str(input_path)
+                path = Path(filename)
+            
+            # 2. 统一获取绝对路径
+            path = path.absolute()
+            
+            # 3. 添加错误信息的具体内容
+            if not path.exists():
+                raise InputError(f"输入文件不存在: {str(path)}")
+            if not path.is_file():
+                raise InputError(f"输入路径不是文件: {str(path)}")
+            if not Util.validate_extname(str(path), Util.get_allow_imgExt()):
+                raise InputError(f"不支持的文件格式: {path.suffix}，支持的格式：{Util.get_allow_imgExt()}")
+            
+            # 4. 文件大小检查（保持不变）
+            if path.stat().st_size > 10 * 1024 * 1024:  # 10MB限制
+                raise InputError(f"文件大小超过10MB限制：{path.stat().st_size / (1024*1024):.2f}MB")
+            
+        except InputError:
+            raise
+        except Exception as e:
+            raise InputError(f"文件验证失败: {str(e)}")
         
     @staticmethod
     def check_system_resources() -> None:
@@ -130,16 +154,33 @@ class Util:
      
     @staticmethod        
     def opencv_write(img, output_image_path, ext='.png'):
-        success, encoded_image = cv2.imencode(ext, img)
-        if success:            
-            image_bytes = encoded_image.tobytes()
-            with open(output_image_path, 'wb') as f:
-                f.write(image_bytes)                
+        # 获取输出路径的扩展名
+        output_ext = Path(output_image_path).suffix.lower()    
+        # 如果输出路径没有扩展名，使用传入的 ext
+        if not output_ext:
+            output_ext = ext.lower()
+            output_image_path = str(Path(output_image_path).with_suffix(output_ext))
+        if output_ext not in Util.get_allow_imgExt() and output_ext not in ['.pbm']: 
+            raise InputError(f"不支持的文件格式: {ext}")
+        if Util.validate_extname(output_image_path, Util.get_allow_imgExt()):
+            success, encoded_image = cv2.imencode(ext, img)
+            if success:    
+                # 创建输出目录
+                output_dir = Path(output_image_path).parent
+                output_dir.mkdir(parents=True, exist_ok=True)      
+                  
+                image_bytes = encoded_image.tobytes()
+                with open(output_image_path, 'wb') as f:
+                    f.write(image_bytes)                
+            else:
+                print("Failed to encode image")
+        elif Util.validate_extname(output_image_path, ['.pbm']):            
+           Util.save_as_pbm(img, output_image_path)
         else:
-            print("Failed to encode image")
+            print("Failed to validate image file")            
                     
     @staticmethod
-    def validate_extname(file_input, allowed_exts, is_file=True):
+    def validate_extname(file_input, allowed_exts):
         """验证文件扩展名"""
         try:
             # 处理 UploadFile 对象
@@ -152,21 +193,7 @@ class Util:
             path = Path(filename).absolute()
             
             # 确保所有扩展名都是小写
-            allowed_exts = [ext.lower() for ext in allowed_exts]
-            
-            if is_file:
-                # 检查文件是否存在
-                if not path.exists():
-                    print(f"File does not exist: {path}")
-                    return False
-                
-                # 获取文件扩展名并检查
-                file_ext = path.suffix.lower()
-                if file_ext not in allowed_exts:
-                    print(f"Invalid extension: {file_ext}, allowed: {allowed_exts}")
-                    return False
-                return True
-            
+            allowed_exts = [ext.lower() for ext in allowed_exts]    
             # 仅验证扩展名
             file_ext = path.suffix.lower()
             if not file_ext:
@@ -177,4 +204,38 @@ class Util:
 
         except Exception as e:
             print(f"Error validating file extension: {e}")
+            return False 
+
+    @staticmethod
+    def save_as_pbm(img, output_path):
+        try:
+            # 确保图像是二值图像
+            if len(img.shape) > 2:
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            _, binary = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)
+            
+            # 转换为 0 和 1 (注意：在 PBM 中，1 表示黑色)
+            binary = (binary == 0).astype(np.uint8)
+            
+            # 计算每行需要的字节数（8位一组）
+            width_bytes = (binary.shape[1] + 7) // 8
+            
+            # 创建输出目录
+            output_dir = Path(output_path).parent
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 写入 PBM 文件
+            with open(output_path, 'wb') as f:
+                # 写入 PBM 头部
+                f.write(b'P4\n')  # P4 表示二进制 PBM
+                f.write(f'{binary.shape[1]} {binary.shape[0]}\n'.encode())
+                
+                # 将位打包成字节并写入
+                for row in binary:
+                    packed_row = np.packbits(row[:width_bytes * 8])
+                    f.write(packed_row.tobytes())
+                    
+            return True
+        except Exception as e:
+            print(f"保存 PBM 文件时出错: {str(e)}")
             return False 
