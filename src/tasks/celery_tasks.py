@@ -7,11 +7,6 @@ import os
 import sys
 from pathlib import Path
 
-# 添加项目根目录到Python路径
-project_root = str(Path(__file__).parent.parent.parent)
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
 from celery import Celery, states
 from celery.exceptions import Ignore
 import time
@@ -19,7 +14,7 @@ from src.processors.image2cad import pdf_to_images, png_to_dxf
 from celery.signals import task_revoked
 
 # 创建Celery应用
-app = Celery('tasks', broker='redis://localhost:6379/0', backend='redis://localhost:6379/0')
+app = Celery('celery_tasks', broker='redis://localhost:6379/0', backend='redis://localhost:6379/0')
 
 # 配置Celery
 app.conf.update(
@@ -116,16 +111,19 @@ def ocr_image(self, image_path, output_dir=None):
                                'input': image_path,
                                'output': output_dir})
         
-        # 这里应该调用OCR处理函数
-        # 由于原代码中没有实现，这里只是模拟处理
-        time.sleep(2)  # 模拟处理时间
-        
+        # 导入OCR处理模块
+        from src.processors.ocr_processor import OCRProcess
+        ocr_process = OCRProcess()
+        ocr_process = OCRProcess()
+        parsed_results, original_height = ocr_process.get_file_rapidOCR(image_path)
+
         # 更新任务状态为完成
         self.update_state(state='SUCCESS',
                          meta={'progress': 100,
                                'current': 'Completed',
                                'input': image_path,
-                               'output': output_dir})
+                               'output': output_dir,
+                               'results': parsed_results})
                                
         return {'status': 'success', 'output_dir': output_dir}
         
