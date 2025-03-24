@@ -30,10 +30,25 @@ class ConfigManager:
     def get_instance(cls):
         """获取单例实例的推荐方法"""
         return cls()
-    
     @staticmethod
-    def _encrypt_value(value: str) -> str:
-        return ConfigManager._cipher.encrypt(value.encode()).decode()
+    def get_config():
+        """获取配置对象"""
+        if ConfigManager._config is None:
+            instance = ConfigManager()  # 确保初始化
+            if ConfigManager._config is None:  # 如果还是None，说明需要显式初始化
+                instance.__init__()
+        return ConfigManager._config
+        
+    @staticmethod
+    def get_max_workers():
+        config = ConfigManager.get_config()
+        return config.getint('DEFAULT', 'max_workers', fallback=4)
+        
+    @staticmethod
+    def get_task_timeout():
+        """获取任务超时时间（分钟）"""
+        config = ConfigManager.get_config()
+        return config.getint('DEFAULT', 'task_timeout_minutes', fallback=30)
     
     @staticmethod
     def _decrypt_value(value: str) -> str:
@@ -46,8 +61,9 @@ class ConfigManager:
     
     def __init__(self):
         """初始化配置"""
-        if not self._initialized:
-            self._config = configparser.ConfigParser()
+        if not getattr(self, '_initialized', False):
+            ConfigManager._config = configparser.ConfigParser()
+            self._config = ConfigManager._config
             # 设置默认配置
             self._defaults = {
                 'tesseract_path': '',

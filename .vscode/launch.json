@@ -2,6 +2,57 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "FastAPI服务",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/server.py",
+      "args": [],
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "PORT": "8000",
+        "HOST": "0.0.0.0",
+        "RELOAD": "true"
+      },
+      "cwd": "${workspaceFolder}",
+      "stopOnEntry": false,
+      "serverReadyAction": {
+        "pattern": ".*Uvicorn running on (http://[^\\s]+)",
+        "uriFormat": "%s/",
+        "action": "openExternally"
+      }
+    },
+    {
+      "name": "Celery Worker",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "celery",
+      "args": [
+        "-A",
+        "src.tasks",
+        "worker",
+        "--pool=solo",
+        "--loglevel=debug",
+        "--concurrency=1",
+        "--without-heartbeat",
+        "--without-mingle"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "REDIS_HOST": "localhost",
+        "REDIS_PORT": "6379",
+        "REDIS_DB": "0",
+        "C_FORCE_ROOT": "true",
+        "FORKED_BY_MULTIPROCESSING": "1"
+      },
+      "cwd": "${workspaceFolder}",
+      "stopOnEntry": false,
+      "purpose": ["debug-in-terminal"]
+    },
+    {
       "name": "PDF转图片",
       "type": "debugpy",
       "request": "launch",
