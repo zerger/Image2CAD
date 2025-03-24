@@ -448,7 +448,7 @@ def filter_line_by_textbbox(merged_lines, text_data):
     
     words, page_height = text_data   
     # 添加文本（优先使用行级文本）
-    for i, (text, x, y, width, height) in enumerate(words):
+    for i, (text, x, y, width, height, angle) in enumerate(words):
         bbox = (x, y, x + width, y + height)      
         
         text_index.insert(i, bbox)  # 只插入行级包围盒

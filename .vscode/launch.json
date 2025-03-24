@@ -74,10 +74,10 @@
       "name": "PNG矢量化",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/src/Image2CAD.py",
+      "program": "${workspaceFolder}/src/processors/Image2CAD.py",
       "args": [
         "png2dxf",
-        "${workspaceFolder}/uploads/temp/pdf_page_1/pdf_page_1.png",
+        "${workspaceFolder}/TestData/1.png",
         ""
       ],
       "console": "integratedTerminal",
@@ -92,7 +92,7 @@
       "program": "${workspaceFolder}/src/processors/ocr_processor.py",
       "args": [
         "ocr_process",
-        "${workspaceFolder}/uploads/temp/pdf_page_1/pdf_page_1.png",
+        "${workspaceFolder}/TestData/pdfImages/pdf_page_1.png",
         "",
         "--scale_factor=2"       
       ],
@@ -107,7 +107,7 @@
         "request": "launch",
         "program": "${workspaceFolder}/src/ui/image_app.py",
         "args": [      
-            "${workspaceFolder}/uploads/temp/pdf_page_1/pdf_page_1.png",   
+            "${workspaceFolder}/TestData/pdfImages/pdf_page_1.png",   
         ],
         "console": "integratedTerminal",
         "env": {

@@ -32,36 +32,43 @@ class OCRProcess:
         
         # 初始化参数配置
         params = {
-            # 全局参数 - 设置最宽松的限制
-            "Global.text_score": 0.1,           # 降低到最低以保留更多可能的文本
+            # 全局参数 - 进一步优化
+            "Global.text_score": 0.05,          # 进一步降低阈值，捕获更多文本
             "Global.use_det": True,
             "Global.use_cls": True,
             "Global.use_rec": True,
-            "Global.max_side_len": 8192,        # 增大到更大尺寸，保持图像细节
-            "Global.min_side_len": 4,           # 降低最小限制，捕获小文本
+            "Global.max_side_len": 16384,       # 更大的尺寸限制，保持更多细节
+            "Global.min_side_len": 2,           # 更小的限制，捕获极小文本
             
-            # 检测参数 - 最大程度检测文本
-            "Det.box_thresh": 0.2,              # 降低检测阈值，检测更多可能的文本区域
-            "Det.unclip_ratio": 2.5,            # 增大文本框扩张比例
-            "Det.det_db_thresh": 0.1,           # 降低二值化阈值
-            "Det.det_db_box_thresh": 0.1,       # 降低文本框阈值
-            "Det.det_db_unclip_ratio": 2.5,     # 增大DB模型的文本框扩张比例
+            # 检测参数 - 极致检测
+            "Det.box_thresh": 0.15,             # 进一步降低检测阈值
+            "Det.unclip_ratio": 3.0,            # 更大的扩张比例，避免文字断开
+            "Det.det_db_thresh": 0.05,          # 更低的二值化阈值，检测浅色文本
+            "Det.det_db_box_thresh": 0.05,      # 匹配二值化阈值
+            "Det.det_db_unclip_ratio": 3.0,     # 匹配扩张比例
+            "Det.det_limit_side_len": 16384,    # 检测时的最大尺寸
+            "Det.det_limit_type": "max",        # 使用最大边限制
             
-            # 识别参数 - 最高精度设置
-            "Rec.rec_batch_num": 1,             # 单张处理确保最高精度
-            "Rec.rec_thresh": 0.1,              # 降低识别阈值，保留更多可能的结果
-            "Rec.min_height": 4,                # 降低最小高度限制
-            "Rec.max_height": 2048,             # 增大最大高度
-            "Rec.min_width": 4,                 # 降低最小宽度限制
-            "Rec.max_width": 2048,              # 增大最大宽度
-            "Rec.rec_image_shape": "3, 64, 640", # 增大识别模型输入尺寸，提高精度
+            # 识别参数 - 极致精度
+            "Rec.rec_batch_num": 1,             # 保持单张处理
+            "Rec.rec_thresh": 0.05,             # 更低的识别阈值
+            "Rec.min_height": 2,                # 更小的高度限制
+            "Rec.max_height": 4096,             # 更大的高度限制
+            "Rec.min_width": 2,                 # 更小的宽度限制
+            "Rec.max_width": 4096,              # 更大的宽度限制
+            "Rec.rec_image_shape": "3, 96, 960", # 更大的识别输入尺寸
+            "Rec.rec_char_dict_path": None,     # 使用默认字典
+            "Rec.rec_algorithm": "SVTR_LCNet",  # 使用更准确的识别算法
             
-            # 方向分类参数 - 提高准确性
-            "Cls.cls_thresh": 0.9,              # 保持较高的方向分类置信度
-            "Cls.cls_batch_num": 1,             # 单张处理
+            # 方向分类参数 - 更准确的分类
+            "Cls.cls_thresh": 0.95,             # 更高的分类置信度
+            "Cls.cls_batch_num": 1,             # 保持单张处理
+            "Cls.cls_model_path": None,         # 使用默认模型
             
-            # 引擎配置 - 最高精度设置
-            "EngineConfig.use_fp16": False      # 使用 FP32 以获得最高精度
+            # 引擎配置 - 最高精度
+            "EngineConfig.use_fp16": False,     # 使用 FP32
+            "EngineConfig.enable_mkldnn": True, # 启用 MKL-DNN 加速
+            "EngineConfig.cpu_math_library_num_threads": 4  # CPU线程数
         }
 
         self.engine = RapidOCR(params=params)

@@ -6,8 +6,8 @@ import sys
 import argparse
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
-from common.config_manager import ConfigManager
-from common.utils import Util
+from src.common.config_manager import ConfigManager
+from src.common.utils import Util
 
 config_manager = ConfigManager.get_instance()
 
