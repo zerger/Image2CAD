@@ -140,9 +140,10 @@ class OCRProcess:
         """
         # 读取图像
         img = Util.opencv_read(image_path)       
-        return self._preprocess_image(img)
+        return OCRProcess.preprocess_image(img)
 
-    def _preprocess_image(self, img):
+    @staticmethod
+    def preprocess_image(img):
         # 1. 图像缩放（如果图片太大）
         max_dimension = 4096  # 最大尺寸
         if isinstance(img, Image.Image):
@@ -193,7 +194,7 @@ class OCRProcess:
             block = cv2.resize(block, (0, 0), fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_LINEAR)
             
             # 保存分块到临时文件
-            block_path = Path(temp_dir) / f"temp_block_{row}_{col}.png"
+            block_path = Path(temp_dir) / f"det_block_{row}_{col}.png"
             Util.opencv_write(block, block_path)
             
             # 对分块进行OCR识别
@@ -265,13 +266,10 @@ class OCRProcess:
         return temp_dir
     
     def calculate_dynamic_block_size(self, original_height, original_width, max_block_size=2048, min_block_size=512):
-        # 确保 max_block_size 不会导致过小的区块
-        while (original_height + max_block_size - 1) // max_block_size > 1 and (original_height % max_block_size) < min_block_size:
+        while max_block_size > min_block_size:            
+            if (original_height % max_block_size >= min_block_size) and (original_width % max_block_size >= min_block_size):
+                break
             max_block_size -= 1
-
-        while (original_width + max_block_size - 1) // max_block_size > 1 and (original_width % max_block_size) < min_block_size:
-            max_block_size -= 1
-
         return max_block_size
 
     def get_image_rapidOCR(self, image, scale_factor=2, bPreprocess = False, bAutoBlock = False, input_image_path=None):
@@ -290,13 +288,12 @@ class OCRProcess:
             image = np.array(image)
         else:
             image = image
-
         original_height, original_width = image.shape[:2]
         # 图像预处理
         if bPreprocess:
             log_mgr.log_info("执行OCR图像预处理...")
             start_time = time.time()
-            preprocessed_img, _ = self._preprocess_image(image) 
+            preprocessed_img, _ = self.preprocess_image(image) 
             preprocess_time = time.time() - start_time
             log_mgr.log_info(f"OCR图像预处理时间: {preprocess_time:.2f}秒")
         else:
@@ -312,42 +309,14 @@ class OCRProcess:
         max_block_size = 4096
         all_results = []
         if bAutoBlock and max(original_height, original_width) > max_block_size:
-            max_block_size = self.calculate_dynamic_block_size(original_height, original_width, max_block_size) // scale_factor
-            overlap = int(max_block_size * 0.1)      
-            num_rows = (original_height + max_block_size - 1) // max_block_size
-            num_cols = (original_width + max_block_size - 1) // max_block_size    
-            total_blocks = num_rows * num_cols
-
-            with tqdm(total=total_blocks, desc="Processing Blocks") as pbar:
-                for row in range(num_rows):
-                    start_y = max(0, row * max_block_size - overlap)
-                    end_y = min(original_height, (row + 1) * max_block_size + overlap)
-                    for col in range(num_cols): 
-                        start_x = max(0, col * max_block_size - overlap)
-                        end_x = min(original_width, (col + 1) * max_block_size + overlap)
-
-                        block_result = self._process_block(row, col, preprocessed_img, scale_factor, temp_dir, 
-                                            start_x, end_x, start_y, end_y)
-                        boxes = block_result[0]        
-                        scores = block_result[1]
-                        for result in block_result:
-                            box = np.array(result[0], dtype=float)
-                            # 调整坐标
-                            box[:, 0] = box[:, 0] / scale_factor + start_x  # x坐标缩放并加上分块的x偏移
-                            box[:, 1] = box[:, 1] / scale_factor + start_y  # y坐标缩放并加上分块的y偏移                                                   
-                            all_results.append((box, result[1]))   
-                        # 更新进度条
-                        pbar.update(1)      
-            # 合并结果并去重
-            all_results = self._merge_overlapping_results(all_results)               
+            all_results = self._scale_det(scale_factor, preprocessed_img, temp_dir, max_block_size)               
         else:
             all_results = self.engine(temp_path, use_det=True, use_cls=False, use_rec=False)     
         detection_time = time.time() - start_time
         log_mgr.log_info(f"OCR检测处理时间: {detection_time:.2f}秒")
         
         # Step 3: Text Recognition with Progress Bar
-        parsed_results = []
-        index = 0
+           
         log_mgr.log_info("执行OCR识别处理...")
         start_time = time.time()
         # 自动选择处理方式
@@ -356,63 +325,197 @@ class OCRProcess:
             scores = all_results['scores']
         else:
             boxes = all_results.boxes           
-            scores = all_results.scores       
-        with tqdm(total=len(boxes), desc="Recognizing Text", unit="region") as pbar:
-            for box, score in zip(boxes, scores):
-                x0 = int(min(point[0] for point in box))
-                y0 = int(min(point[1] for point in box))
-                x1 = int(max(point[0] for point in box))
-                y1 = int(max(point[1] for point in box))
-                
-                # Calculate width and height
-                width = x1 - x0
-                height = y1 - y0
-
-                # Convert coordinates
-                x, y, width, height = self.convert_to_dxf_coords(x0, y0, x1, y1, original_height)
-                if self._is_vertical_text(box):
-                    x = x + width
-                    new_width = height
-                    new_height = width
-                    angle = 90
-                else:
-                    new_width = width
-                    new_height = height
-                    angle = 0
-                                
-                text_region = image[y0:y1, x0:x1]  # 裁剪文本区域
-                if text_region is None or text_region.size == 0:
-                    print("Skipping empty text_region")
-                    continue  # 跳过当前循环的剩余部分
-                # Optionally scale the region for better recognition
-                scaled_region = cv2.resize(text_region, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_LINEAR)
-                index += 1
-                block_path = Path(temp_dir) / f"temp_block_{index}.png"
-                Util.opencv_write(scaled_region, block_path)
-                # Recognize text in the cropped region
-                recognition_results = self.engine(block_path, use_det=False, use_cls=True, use_rec=True)
-                
-                # 假设 recognition_results 是一个 RapidOCROutput 对象
-                result_txt = ""
-                if recognition_results is not None:
-                    if hasattr(recognition_results, 'txts') and hasattr(recognition_results, 'scores'):
-                        for text, score in zip(recognition_results.txts, recognition_results.scores):
-                            result_txt = text
-                    else:
-                        print("Error: recognition_results does not have the required attributes.")
-                else:
-                    print("Error: recognition_results is None")
-                 # Add to results
-                parsed_results.append((result_txt, x, y, new_width, new_height, angle))
-                
-                # Update the progress bar
-                pbar.update(1)
+            scores = all_results.scores                   
+        parsed_results = self._scale_rec(scale_factor, original_height, preprocessed_img, temp_dir, boxes, scores)
         recognition_time = time.time() - start_time
         log_mgr.log_info(f"OCR识别处理时间: {recognition_time:.2f}秒")
 
-        Util.remove_directory(temp_dir)
+        # Util.remove_directory(temp_dir)
         return parsed_results, original_height
-        
+
+    def _scale_rec(self, scale_factor, original_height, preprocessed_img, temp_dir, boxes, scores):
+        parsed_results = []    
+        max_limit_pixel = 89478485  # PIL 的默认限制
+        index = 0
+
+        # 设置 PIL 的限制
+        Image.MAX_IMAGE_PIXELS = max_limit_pixel
+
+        with tqdm(total=len(boxes), desc="Recognizing Text", unit="region") as pbar:
+            for box, score in zip(boxes, scores):
+                try:
+                    x0 = int(min(point[0] for point in box))
+                    y0 = int(min(point[1] for point in box))
+                    x1 = int(max(point[0] for point in box))
+                    y1 = int(max(point[1] for point in box))
+                    
+                    # Calculate width and height
+                    width = x1 - x0
+                    height = y1 - y0
+
+                    # 检查裁剪区域大小
+                    crop_size = width * height
+                    if crop_size > max_limit_pixel:
+                        print(f"Warning: Large region detected ({width}x{height}={crop_size} pixels)")
+                        # 可以选择跳过或者进行分块处理
+                        if crop_size > max_limit_pixel * 2:  # 如果太大，直接跳过
+                            print(f"Skipping block because of size: {width}x{height}")
+                            continue
+                        # 否则尝试调整 scale_factor
+                        local_scale = min(1.0, np.sqrt(max_limit_pixel / crop_size))
+                        print(f"Adjusting scale factor from {scale_factor} to {local_scale}")
+                        scale_factor = min(scale_factor, local_scale)
+
+                    # Convert coordinates
+                    x, y, width, height = self.convert_to_dxf_coords(x0, y0, x1, y1, original_height)
+                    if self._is_vertical_text(box):
+                        x = x + width
+                        new_width = height
+                        new_height = width
+                        angle = 90
+                    else:
+                        new_width = width
+                        new_height = height
+                        angle = 0
+                                
+                    text_region = preprocessed_img[y0:y1, x0:x1]  # 裁剪文本区域
+                    if text_region is None or text_region.size == 0:
+                        print("Skipping empty text_region")
+                        continue
+
+                    # 根据区域大小动态调整缩放
+                    if width * height < max_limit_pixel/scale_factor/scale_factor:
+                        scaled_region = cv2.resize(text_region, None, 
+                                                fx=scale_factor, 
+                                                fy=scale_factor, 
+                                                interpolation=cv2.INTER_LINEAR)
+                    else:
+                        # 如果区域太大，使用较小的缩放因子
+                        safe_scale = np.sqrt(max_limit_pixel / (width * height))
+                        scaled_region = cv2.resize(text_region, None,
+                                                fx=safe_scale,
+                                                fy=safe_scale,
+                                                interpolation=cv2.INTER_LINEAR)
+
+                    index += 1
+                    block_path = Path(temp_dir) / f"rec_block_{index}.png"
+                    
+                    # 保存前检查大小
+                    if scaled_region.size > max_limit_pixel:
+                        print(f"Warning: Scaled region too large ({scaled_region.shape}), adjusting...")
+                        continue
+
+                    Util.opencv_write(scaled_region, block_path)
+                    
+                    # Recognize text in the cropped region
+                    recognition_results = self.engine(block_path, use_det=False, use_cls=True, use_rec=True)
+                    
+                    # 处理识别结果
+                    result_txt = ""
+                    if recognition_results is not None:
+                        if hasattr(recognition_results, 'txts') and hasattr(recognition_results, 'scores'):
+                            for text, score in zip(recognition_results.txts, recognition_results.scores):
+                                result_txt = text
+                        else:
+                            print("Error: recognition_results does not have the required attributes.")
+                    else:
+                        print("Error: recognition_results is None")
+
+                    parsed_results.append((result_txt, x, y, new_width, new_height, angle))
+                    
+                except Exception as e:
+                    print(f"Error processing region: {e}")
+                    continue
+                finally:
+                    pbar.update(1)
+
+        return parsed_results
+
+    def _scale_det(self, scale_factor, preprocessed_img, temp_dir, max_block_size):
+        original_height, original_width = preprocessed_img.shape[:2]
+        all_results = []
+        max_block_size = self.calculate_dynamic_block_size(original_height, original_width, max_block_size) // scale_factor
+        overlap = int(max_block_size * 0.1)      
+        num_rows = (original_height + max_block_size - 1) // max_block_size
+        num_cols = (original_width + max_block_size - 1) // max_block_size    
+        total_blocks = num_rows * num_cols
+
+        with tqdm(total=total_blocks, desc="Processing Blocks") as pbar:
+            for row in range(num_rows):
+                start_y = max(0, row * max_block_size - overlap)
+                end_y = min(original_height, (row + 1) * max_block_size + overlap)
+                for col in range(num_cols): 
+                    start_x = max(0, col * max_block_size - overlap)
+                    end_x = min(original_width, (col + 1) * max_block_size + overlap)
+
+                    block_result = self._process_block(row, col, preprocessed_img, scale_factor, temp_dir, 
+                                            start_x, end_x, start_y, end_y)    
+                    all_results.extend(block_result)
+                        # 更新进度条
+                    pbar.update(1)      
+                # 合并结果并去重
+            all_results = self._merge_overlapping_results(all_results)
+        return all_results
+    
+    def _boxes_overlap(self, box1, box2, threshold=0.5, height_diff_threshold=0.3):
+            """
+            检查两个框是否重叠，主要关注横向相连且高度相近的文字区域
+            :param box1: 第一个框的坐标
+            :param box2: 第二个框的坐标
+            :param threshold: IoU阈值
+            :param height_diff_threshold: 高度差异阈值（相对值）
+            """
+            # 获取每个框的基本信息
+            box1_y_min = min(p[1] for p in box1)
+            box1_y_max = max(p[1] for p in box1)
+            box2_y_min = min(p[1] for p in box2)
+            box2_y_max = max(p[1] for p in box2)
+            
+            # 计算两个框的高度
+            height1 = box1_y_max - box1_y_min
+            height2 = box2_y_max - box2_y_min
+            
+            # 检查高度是否相近
+            avg_height = (height1 + height2) / 2
+            height_diff = abs(height1 - height2) / avg_height
+            if height_diff > height_diff_threshold:
+                return False
+            
+            # 检查垂直方向的重叠
+            y_overlap = min(box1_y_max, box2_y_max) - max(box1_y_min, box2_y_min)
+            if y_overlap < min(height1, height2) * 0.5:  # 要求至少50%的垂直重叠
+                return False
+            
+            # 获取水平方向的信息
+            box1_x_min = min(p[0] for p in box1)
+            box1_x_max = max(p[0] for p in box1)
+            box2_x_min = min(p[0] for p in box2)
+            box2_x_max = max(p[0] for p in box2)
+            
+            # 检查水平方向的连接
+            x_gap = max(box1_x_min, box2_x_min) - min(box1_x_max, box2_x_max)
+            max_allowed_gap = min(height1, height2) * 2  # 允许的最大间隔为高度的2倍
+            
+            # 如果水平间隔太大，不合并
+            if x_gap > max_allowed_gap:
+                return False
+            
+            # 计算交集面积（可选，用于额外的验证）
+            x1 = max(box1_x_min, box2_x_min)
+            x2 = min(box1_x_max, box2_x_max)
+            y1 = max(box1_y_min, box2_y_min)
+            y2 = min(box1_y_max, box2_y_max)
+            
+            if x1 < x2 and y1 < y2:
+                intersection = (x2 - x1) * (y2 - y1)
+                area1 = (box1_x_max - box1_x_min) * height1
+                area2 = (box2_x_max - box2_x_min) * height2
+                iou = intersection / min(area1, area2)
+                return iou > threshold
+            
+            # 如果满足前面的所有条件（高度相近、垂直重叠、水平接近），则认为可以合并
+            return True
+            
     def _merge_overlapping_results(self, results):
         """
         合并重叠的OCR结果
@@ -420,28 +523,7 @@ class OCRProcess:
         :return: 字典形式的合并结果
         """
         if not results:
-            return {'boxes': [], 'scores': []}
-
-        def boxes_overlap(box1, box2, threshold=0.5):
-            """检查两个框是否重叠"""
-            # 计算框的面积
-            def box_area(box):
-                return (max(p[0] for p in box) - min(p[0] for p in box)) * \
-                       (max(p[1] for p in box) - min(p[1] for p in box))
-            
-            # 计算交集面积
-            x1 = max(min(p[0] for p in box1), min(p[0] for p in box2))
-            y1 = max(min(p[1] for p in box1), min(p[1] for p in box2))
-            x2 = min(max(p[0] for p in box1), max(p[0] for p in box2))
-            y2 = min(max(p[1] for p in box1), max(p[1] for p in box2))
-            
-            if x1 < x2 and y1 < y2:
-                intersection = (x2 - x1) * (y2 - y1)
-                area1 = box_area(box1)
-                area2 = box_area(box2)
-                iou = intersection / min(area1, area2)
-                return iou > threshold
-            return False
+            return {'boxes': [], 'scores': []}        
 
         # 按置信度排序
         sorted_results = sorted(results, key=lambda x: x[1], reverse=True)
@@ -462,7 +544,7 @@ class OCRProcess:
         for i, (box1, score1) in enumerate(sorted_results):
             if i in used:
                 continue
-
+            box1 = np.round(box1, decimals=1)    
             # 确保 box1 是列表
             if isinstance(box1, np.ndarray):
                 box1 = box1.tolist()
@@ -481,22 +563,21 @@ class OCRProcess:
                     # 确保 box2 是列表
                     if isinstance(box2, np.ndarray):
                         box2 = box2.tolist()
-                    if boxes_overlap(box1, box2):
+                    if self._boxes_overlap(box1, box2):
                         used.add(j)                        
-                        current_group.append((box2, score2))
-
+                        current_group.append((box2, score2))      
             # 如果只有一个结果，直接添加
             if len(current_group) == 1:
                 merged_boxes.append(current_group[0][0])                
                 merged_scores.append(current_group[0][1])
             else:              
                 # 计算最小包围框
-                merged_box = [
+                merged_box = np.array([
                     [min(p[0] for p in box) for box, _ in current_group],
                     [min(p[1] for p in box) for box, _ in current_group],
                     [max(p[0] for p in box) for box, _ in current_group],
                     [max(p[1] for p in box) for box, _ in current_group]
-                ]
+                ])
                 # 计算平均置信度
                 merged_score = sum(x[1] for x in current_group) / len(current_group)
                 merged_boxes.append(merged_box)               

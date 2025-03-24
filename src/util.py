@@ -144,7 +144,6 @@ class Util:
         if success:            
             image_bytes = encoded_image.tobytes()            
             with open(output_image_path, 'wb') as f:
-                f.write(image_bytes)
-                print("Image saved successfully")
+                f.write(image_bytes)                
         else:
             print("Failed to encode image")
