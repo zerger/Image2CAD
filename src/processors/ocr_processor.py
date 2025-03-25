@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations
 import subprocess
 from pathlib import Path
 import pytesseract
@@ -13,36 +14,55 @@ from rtree import index
 from tqdm import tqdm
 import time
 import argparse
+import psutil
+import functools
+from typing import List, Optional, Tuple, Union
 
-from src.common.config_manager import ConfigManager
-from src.common.log_manager import LogManager, setup_logging
+from src.common.config_manager import config_manager
+from src.common.log_manager import log_mgr
+from src.processors.dxf_processor import DXFProcessor
 from src.common.errors import ProcessingError, InputError, ResourceError, TimeoutError
 from src.common.utils import Util
-from src.processors.dxf_processor import dxfProcess
 from rapidocr import RapidOCR
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-log_mgr = LogManager().get_instance()
-config_manager = ConfigManager.get_instance()
-class OCRProcess:
+class OCRProcessor:
     def __init__(self, mode='normal'):
-        # 初始化 RapidOCR
-        log_mgr.log_info("初始化OCR引擎...")
-        start_time = time.time()       
-        # 获取OCR参数配置并初始化引擎
-        self.params = ConfigManager.get_rapidocr_params(mode)
-        self.engine = RapidOCR(params=self.params)
-        self.mode = mode
-        
-        # 记录初始化配置
-        log_mgr.log_info(f"\nOCR初始化配置：")
-        log_mgr.log_info(f"├─ 处理模式：{mode}")
-        log_mgr.log_info(f"├─ 最大边长：{self.params.get('Global.max_side_len', 'default')}")
-        log_mgr.log_info(f"└─ 识别算法：{self.params.get('Rec.rec_algorithm', 'default')}")
-        
-        init_time = time.time() - start_time
-        log_mgr.log_info(f"初始化OCR引擎时间: {init_time:.2f}秒")
-    
+        """初始化OCR处理器"""
+        try:
+            log_mgr.log_info("初始化OCR引擎...")
+            start_time = time.time()
+            
+            # 验证模式参数
+            valid_modes = ['fast', 'normal', 'best']
+            if mode not in valid_modes:
+                raise ValueError(f"无效的处理模式: {mode}，可选值: {valid_modes}")
+            
+            # 获取OCR参数配置并初始化引擎
+            self.params = config_manager.get_rapidocr_params(mode)
+            if not self.params:
+                raise ValueError("获取OCR参数失败")
+                
+            # 初始化引擎前检查必要组件
+            try:
+                from rapidocr import RapidOCR
+            except ImportError:
+                raise ImportError("RapidOCR未安装，请先安装: pip install rapidocr")
+                
+            self.engine = RapidOCR(params=self.params)
+            self.mode = mode
+            
+            # 验证引擎初始化
+            if not hasattr(self.engine, '__call__'):
+                raise RuntimeError("OCR引擎初始化失败")
+            
+            init_time = time.time() - start_time
+            log_mgr.log_info(f"OCR引擎初始化完成，耗时: {init_time:.2f}秒")
+            
+        except Exception as e:
+            log_mgr.log_error(f"OCR引擎初始化失败: {str(e)}")
+            raise
+
     def validate_ocr_env(self):
         """验证OCR环境配置"""
         tesseract_exe = config_manager.get_tesseract_path()        
@@ -149,7 +169,7 @@ class OCRProcess:
         """
         # 读取图像
         img = Util.opencv_read(image_path)       
-        return OCRProcess.preprocess_image(img)
+        return OCRProcessor.preprocess_image(img)
 
     @staticmethod
     def preprocess_image(img):
@@ -281,66 +301,83 @@ class OCRProcess:
             max_block_size -= 1
         return max_block_size
 
-    def get_image_rapidOCR(self, image, scale_factor=2, bPreprocess = False, bAutoBlock = False, input_image_path=None):
-        """
-        使用 RapidOCR 进行OCR识别
-        :param image: 输入图片
-        :param input_image_path: 输入图片路径
-        :param scale_factor: 放大倍数   
-        """
+    def get_image_rapidOCR(self, image, scale_factor=2, bPreprocess=False, bAutoBlock=False, input_image_path=None):
+        """OCR处理图像"""
         try:
-            from rapidocr import RapidOCR
-        except ImportError:
-            raise RuntimeError("RapidOCR未安装，请先安装RapidOCR")
+            # 输入验证
+            if image is None:
+                raise ValueError("输入图像为空")
+                
+            if scale_factor <= 0:
+                raise ValueError("缩放因子必须大于0")
+                
+            # 图像格式检查和转换
+            if isinstance(image, Image.Image):
+                image = np.array(image)
+            elif not isinstance(image, np.ndarray):
+                raise TypeError("不支持的图像类型")
+                
+            # 检查图像维度
+            if len(image.shape) not in [2, 3]:
+                raise ValueError("不支持的图像维度")
+                
+            original_height, original_width = image.shape[:2]
+            if original_height == 0 or original_width == 0:
+                raise ValueError("图像尺寸无效")
+                
+            # 内存使用检查
+            required_memory = original_height * original_width * (3 if len(image.shape) == 3 else 1)
+            available_memory = psutil.virtual_memory().available
+            if required_memory * 4 > available_memory:  # 预估处理需要4倍图像大小的内存
+                raise MemoryError("内存不足以处理该图像")
+                
+            # 图像预处理
+            if bPreprocess:
+                log_mgr.log_info("执行OCR图像预处理...")
+                start_time = time.time()
+                preprocessed_img, _ = self.preprocess_image(image) 
+                preprocess_time = time.time() - start_time
+                log_mgr.log_info(f"OCR图像预处理时间: {preprocess_time:.2f}秒")
+            else:
+                preprocessed_img = image       
+             # 保存预处理后的图像到临时文件
+            temp_dir = self.get_temp_directory(input_image_path)   
+            temp_path = Path(temp_dir) / "temp_preprocessed.png"
+            Util.opencv_write(preprocessed_img, temp_path)
 
-        if isinstance(image, Image.Image):
-            image = np.array(image)
-        else:
-            image = image
-        original_height, original_width = image.shape[:2]
-        # 图像预处理
-        if bPreprocess:
-            log_mgr.log_info("执行OCR图像预处理...")
+            # Step 1: Text Detection      
+            log_mgr.log_info("执行OCR检测处理...")
             start_time = time.time()
-            preprocessed_img, _ = self.preprocess_image(image) 
-            preprocess_time = time.time() - start_time
-            log_mgr.log_info(f"OCR图像预处理时间: {preprocess_time:.2f}秒")
-        else:
-            preprocessed_img = image       
-         # 保存预处理后的图像到临时文件
-        temp_dir = self.get_temp_directory(input_image_path)   
-        temp_path = Path(temp_dir) / "temp_preprocessed.png"
-        Util.opencv_write(preprocessed_img, temp_path)
+            max_block_size = 4096
+            all_results = []
+            if bAutoBlock and max(original_height, original_width) > max_block_size:
+                all_results = self._scale_det(scale_factor, preprocessed_img, temp_dir, max_block_size)               
+            else:
+                all_results = self.raidocr_process(temp_path, use_det=True, use_cls=False, use_rec=False)     
+            detection_time = time.time() - start_time
+            log_mgr.log_info(f"OCR检测处理时间: {detection_time:.2f}秒")
+            
+            # Step 3: Text Recognition with Progress Bar
+               
+            log_mgr.log_info("执行OCR识别处理...")
+            start_time = time.time()
+            # 自动选择处理方式
+            if isinstance(all_results, dict):
+                boxes = all_results['boxes']        
+                scores = all_results['scores']
+            else:
+                boxes = all_results.boxes           
+                scores = all_results.scores                   
+            parsed_results = self._scale_rec(scale_factor, original_height, preprocessed_img, temp_dir, boxes, scores)
+            recognition_time = time.time() - start_time
+            log_mgr.log_info(f"OCR识别处理时间: {recognition_time:.2f}秒")
 
-        # Step 1: Text Detection      
-        log_mgr.log_info("执行OCR检测处理...")
-        start_time = time.time()
-        max_block_size = 4096
-        all_results = []
-        if bAutoBlock and max(original_height, original_width) > max_block_size:
-            all_results = self._scale_det(scale_factor, preprocessed_img, temp_dir, max_block_size)               
-        else:
-            all_results = self.raidocr_process(temp_path, use_det=True, use_cls=False, use_rec=False)     
-        detection_time = time.time() - start_time
-        log_mgr.log_info(f"OCR检测处理时间: {detection_time:.2f}秒")
-        
-        # Step 3: Text Recognition with Progress Bar
-           
-        log_mgr.log_info("执行OCR识别处理...")
-        start_time = time.time()
-        # 自动选择处理方式
-        if isinstance(all_results, dict):
-            boxes = all_results['boxes']        
-            scores = all_results['scores']
-        else:
-            boxes = all_results.boxes           
-            scores = all_results.scores                   
-        parsed_results = self._scale_rec(scale_factor, original_height, preprocessed_img, temp_dir, boxes, scores)
-        recognition_time = time.time() - start_time
-        log_mgr.log_info(f"OCR识别处理时间: {recognition_time:.2f}秒")
+            # Util.remove_directory(temp_dir)
+            return parsed_results, original_height
 
-        # Util.remove_directory(temp_dir)
-        return parsed_results, original_height
+        except Exception as e:
+            log_mgr.log_error(f"OCR处理失败: {str(e)}")
+            raise
 
     def _scale_rec(self, scale_factor, original_height, preprocessed_img, temp_dir, boxes, scores):
         parsed_results = []    
@@ -628,7 +665,7 @@ class OCRProcess:
         #img_name = input_file.stem
         #img_dir = input_file.parent
         #wb_img = Path(img_dir) / f"{img_name}_wb.png"
-        #OCRProcess.ensure_white_background(input_path, wb_img)
+        #OCRProcessor.ensure_white_background(input_path, wb_img)
         
         config_manager.set_ocr_mode("best")
         # 获取可执行路径
@@ -1101,34 +1138,44 @@ class OCRProcess:
     
 
     def process_single_file(self, input_path, output_folder, scale_factor=2, bPreprocess=False, bAutoBlock=False):
-        """
-        处理单个文件的OCR流程
-
-        :param input_path: 输入文件路径
-        :param output_folder: 输出目录
-        :param scale_factor: 放大倍数     
-        :return: (文件路径, 是否成功, 输出文件路径)
-        """
+        """处理单个文件"""
         try:
-            log_mgr.log_info(f"开始处理文件: {input_path}")
-            Util.validate_image_file(input_path)
-            Util.check_system_resources()                
-
-            os.makedirs(output_folder, exist_ok=True)
-            if not os.access(output_folder, os.W_OK):
-                raise PermissionError(f"输出目录不可写: {output_folder}")
-
-            base_name = Path(input_path).stem      
+            # 路径验证
+            if not input_path or not isinstance(input_path, (str, Path)):
+                raise ValueError("无效的输入路径")
+                
+            input_path = Path(input_path)
+            if not input_path.exists():
+                raise FileNotFoundError(f"输入文件不存在: {input_path}")
+                
+            # 输出目录验证和创建
+            output_folder = Path(output_folder) if output_folder else input_path.parent / "output"
+            try:
+                output_folder.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                raise PermissionError(f"无法创建输出目录: {str(e)}")
+                
+            # 文件大小检查
+            file_size = input_path.stat().st_size
+            max_size = 100 * 1024 * 1024  # 100MB
+            if file_size > max_size:
+                raise ValueError(f"文件过大: {file_size/1024/1024:.1f}MB > {max_size/1024/1024}MB")
+                
+            # 系统资源检查
+            Util.check_system_resources()
+            
+            base_name = input_path.stem      
             start_time = time.time()
             # OCR处理       
             log_mgr.log_info("执行OCR处理...")            
-            text_positions = ocr_process.get_file_rapidOCR(input_path, scale_factor, bPreprocess, bAutoBlock)      
+            text_positions = self.get_file_rapidOCR(input_path, scale_factor, bPreprocess, bAutoBlock)      
             log_mgr.log_processing_time("OCR处理", start_time)
             start_time = time.time()      
 
             # === 结果整合 ===
             log_mgr.log_info("输出结果...")
-            final_output = Path(output_folder) / f"output_{base_name}_1.dxf"    
+            final_output = output_folder / f"output_{base_name}_1.dxf"   
+            dxfProcess = DXFProcessor()
             dxfProcess.save_to_dxf(str(final_output), [], text_positions, input_path)
             log_mgr.log_processing_time("结果输出", start_time)
 
@@ -1159,11 +1206,7 @@ class OCRProcess:
         :return: 处理结果列表 [(文件路径, 是否成功, 输出文件路径)]
         """
         results = []
-        fn_start_time = time.time()  
-
-        setup_logging(console=True)
-        dxfProcess.setup_dxf_logging()
-        
+        fn_start_time = time.time()       
         # 显示当前配置参数
         log_mgr.log_info("\n当前OCR识别参数：")
         log_mgr.log_info(f"├─ 输入图片路径：{input_path}")  
@@ -1232,6 +1275,50 @@ class OCRProcess:
         # 执行OCR
         return self.engine(image_path, **run_params)
         
+    def validate_params(self, func):
+        """参数验证装饰器"""
+        @functools.wraps(func)
+        def wrapper(self, *args, **kwargs):
+            try:
+                # 验证基本参数
+                if 'scale_factor' in kwargs:
+                    if not isinstance(kwargs['scale_factor'], (int, float)) or kwargs['scale_factor'] <= 0:
+                        raise ValueError("scale_factor 必须是正数")
+                        
+                if 'bPreprocess' in kwargs and not isinstance(kwargs['bPreprocess'], bool):
+                    raise ValueError("bPreprocess 必须是布尔值")
+                    
+                if 'bAutoBlock' in kwargs and not isinstance(kwargs['bAutoBlock'], bool):
+                    raise ValueError("bAutoBlock 必须是布尔值")
+                    
+                # 执行原函数
+                return func(self, *args, **kwargs)
+                
+            except Exception as e:
+                log_mgr.log_error(f"参数验证失败: {str(e)}")
+                raise
+                
+        return wrapper
+        
+    def __del__(self):
+        """确保资源正确释放"""
+        try:
+            # 清理临时文件
+            if hasattr(self, '_temp_files'):
+                for temp_file in self._temp_files:
+                    try:
+                        if Path(temp_file).exists():
+                            Path(temp_file).unlink()
+                    except Exception as e:
+                        log_mgr.log_warning(f"清理临时文件失败: {str(e)}")
+                        
+            # 清理其他资源
+            if hasattr(self, 'engine'):
+                self.engine = None
+                
+        except Exception as e:
+            log_mgr.log_error(f"资源清理失败: {str(e)}")
+        
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ocr 工具")
     subparsers = parser.add_subparsers(dest='command')
@@ -1254,7 +1341,7 @@ if __name__ == "__main__":
     # 解析命令行参数
     args = parser.parse_args()
 
-    ocr_process = OCRProcess(mode=args.mode)
+    ocr_process = OCRProcessor(mode=args.mode)
     if args.command == 'ocr_process':
         output_dir = args.output_path or Util.default_output_path(args.input_file, 'ocr')
         result = ocr_process.ocr_process(args.input_file, output_dir, args.scale_factor, args.bPreprocess, args.bAutoBlock)

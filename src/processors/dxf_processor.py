@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations
+from typing import List, Union, Optional, Dict, Any, Tuple
+from pathlib import Path
 import ezdxf
 import os
 import logging
@@ -10,34 +13,307 @@ from shapely.validation import make_valid
 import platform
 import argparse
 from lxml import etree
-from typing import Tuple
 import sys
 import os
+from dataclasses import dataclass
+import numpy as np
+from shapely.geometry import Polygon, MultiPolygon, MultiLineString, LineString
+from shapely.ops import unary_union
 
 from src.common.utils import Util
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from shapely.geometry import Polygon, MultiPolygon, MultiLineString, LineString, box
 from shapely.ops import unary_union
+from src.common.log_manager import log_mgr
 
-class dxfProcess:
-    DXF_VERSION_MAP = {
-    'R12': 'AC1009',
-    'R2000': 'AC1015',
-    'R2004': 'AC1018',
-    'R2007': 'AC1021',
-    'R2010': 'AC1024',
-    'R2013': 'AC1027',
-    'R2018': 'AC1032'
-    }
+@dataclass
+class DXFConfig:
+    """DXF配置参数"""
+    version: str = 'R2010'
+    text_style: str = '工程字体'
+    image_transparency: int = 30
+    layers: Dict[str, Dict[str, Any]] = None
     
+    def __post_init__(self):
+        if self.layers is None:
+            self.layers = {
+                '轮廓': {'color': 7, 'linetype': 'CONTINUOUS', 'lineweight': 0.15},
+                '脊线': {'color': 9, 'linetype': 'CONTINUOUS', 'lineweight': 0.15},
+                '中心线': {'color': 3, 'linetype': 'CENTER', 'lineweight': 0.30},
+                '文本': {'color': 1, 'linetype': 'HIDDEN', 'lineweight': 0.15}
+            }
+
+class DXFProcessor:
+    """DXF处理器"""
+    
+    def __init__(self, config: Optional[DXFConfig] = None):
+        self.config = config or DXFConfig()
+        self.doc = None
+        self.msp = None
+        
+    def create_document(self) -> None:
+        """创建新的DXF文档"""
+        try:
+            self.doc = ezdxf.new(self.config.version)
+            self.msp = self.doc.modelspace()
+            self._setup_document()
+        except Exception as e:
+            log_mgr.log_error(f"创建DXF文档失败: {str(e)}")
+            raise
+
+    def _setup_document(self) -> None:
+        """设置文档基本配置"""
+        try:
+            self._setup_layers()
+            DXFProcessor.setup_text_styles(self.doc)
+        except Exception as e:
+            log_mgr.log_error(f"设置DXF文档配置失败: {str(e)}")
+            raise
+
+    def _setup_layers(self) -> None:
+        """设置图层"""
+        try:
+            for name, props in self.config.layers.items():
+                if name not in self.doc.layers:
+                    layer = self.doc.layers.add(name=name)
+                else:
+                    layer = self.doc.layers.get(name)
+                layer.color = props['color']
+                layer.linetype = props['linetype']
+                layer.lineweight = props['lineweight']
+        except Exception as e:
+            log_mgr.log_error(f"设置图层失败: {str(e)}")
+            raise
+
+    def add_text(self, text: str, position: Tuple[float, float], 
+                height: float, rotation: float = 0.0, 
+                layer: str = '文本') -> None:
+        """添加文本"""
+        try:
+            if not self.msp:
+                raise ValueError("DXF文档未初始化")
+                
+            text_entity = self.msp.add_text(
+                text,
+                dxfattribs={
+                    'height': height,
+                    'rotation': rotation,
+                    'color': self.config.layers[layer]['color'],
+                    'layer': layer,
+                    'style': self.config.text_style
+                }
+            )
+            
+            text_entity.set_placement(
+                position,
+                align=TextEntityAlignment.LEFT
+            )
+            
+        except Exception as e:
+            log_mgr.log_error(f"添加文本失败: {str(e)}")
+            raise
+            
+    def add_image(self, image_path: Union[str, Path]) -> None:
+        """添加参考图像"""
+        try:
+            image_path = Path(image_path).resolve()
+            if not image_path.exists():
+                raise FileNotFoundError(f"图像文件不存在: {image_path}")
+                
+            # 获取图像尺寸
+            width, height = self._get_image_size(image_path)
+            
+            # 创建图像定义
+            image_def = self.doc.add_image_def(
+                filename=str(image_path),
+                size_in_pixel=(width, height)
+            )
+            
+            # 设置图像图层
+            ref_layer_name = 'REF_IMAGE'
+            if ref_layer_name not in self.doc.layers:
+                layer = self.doc.layers.add(
+                    name=ref_layer_name,
+                    dxfattribs={
+                        'color': 7,
+                        'lineweight': 0
+                    }
+                )
+            else:
+                layer = self.doc.layers.get(ref_layer_name)
+                
+            # 设置透明度
+            self._set_transparency(layer, self.config.image_transparency)
+            
+            # 添加图像
+            self._add_image_entity(image_def, (0, 0), (width, height))
+            
+        except Exception as e:
+            log_mgr.log_error(f"添加图像失败: {str(e)}")
+            raise
+
+    def add_geometry(self, geometry: Union[MultiPolygon, MultiLineString, List[LineString]], 
+                    layer: str, color: int) -> None:
+        """添加几何图形"""
+        try:
+            if isinstance(geometry, MultiPolygon):
+                self._add_multipolygon(geometry, color, layer)
+            elif isinstance(geometry, (MultiLineString, List)):
+                self._add_lines(geometry, color, layer)
+            else:
+                raise ValueError(f"不支持的几何类型: {type(geometry)}")
+        except Exception as e:
+            log_mgr.log_error(f"添加几何图形失败: {str(e)}")
+            raise
+
+    def save(self, output_path: Union[str, Path]) -> None:
+        """保存DXF文档"""
+        try:
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            self.doc.saveas(output_path)
+        except Exception as e:
+            log_mgr.log_error(f"保存DXF文件失败: {str(e)}")
+            raise
+
+    @staticmethod
+    def _get_image_size(image_path: Path) -> Tuple[int, int]:
+        """获取图像尺寸"""
+        try:
+            img = cv2.imread(str(image_path))
+            if img is None:
+                raise ValueError(f"无法读取图像: {image_path}")
+            return img.shape[1], img.shape[0]
+        except Exception as e:
+            log_mgr.log_error(f"获取图像尺寸失败: {str(e)}")
+            raise
+
+    def _set_transparency(self, entity: Any, transparency: int) -> None:
+        """设置透明度"""
+        try:
+            alpha = int((100 - transparency) * 0.9)
+            if self.doc.dxfversion >= 'AC1027':  # 2013+
+                entity.dxf.transparency = alpha
+            else:
+                # 旧版本使用颜色模拟透明度
+                gray = int(255 * (transparency / 100))
+                entity.dxf.color = ezdxf.colors.rgb2int((gray, gray, gray))
+        except Exception as e:
+            log_mgr.log_error(f"设置透明度失败: {str(e)}")
+            raise
+
+    def _add_multipolygon(self, multipolygon: MultiPolygon, 
+                         color: int, layer: str) -> None:
+        """添加多边形"""
+        try:
+            for polygon in multipolygon.geoms:
+                # 添加外环
+                points = list(polygon.exterior.coords)
+                self.msp.add_lwpolyline(
+                    points,
+                    close=True,
+                    dxfattribs={
+                        "color": color,
+                        "layer": layer
+                    }
+                )
+                
+                # 添加内环
+                for interior in polygon.interiors:
+                    points = list(interior.coords)
+                    self.msp.add_lwpolyline(
+                        points,
+                        close=True,
+                        dxfattribs={
+                            "color": color,
+                            "layer": layer
+                        }
+                    )
+        except Exception as e:
+            log_mgr.log_error(f"添加多边形失败: {str(e)}")
+            raise
+
+    def _add_lines(self, ridges, color, layername):
+        """
+        批量将线段添加到 DXF
+        :param ridges: 可为 LineString、MultiLineString、List（包含 LineString 或 点集）
+        """
+        try:
+            if not ridges:
+                return
+            
+            # 处理单个直线段
+            if isinstance(ridges, tuple) and len(ridges) == 2:
+                self.msp.add_line(
+                    start=ridges[0],
+                    end=ridges[1],
+                    dxfattribs={"color": color, "layer": layername}
+                )
+                return
+            
+            # 处理直线段列表
+            if isinstance(ridges, list):
+                for line in ridges:
+                    if isinstance(line, tuple) and len(line) == 2:
+                        # 直线段格式 ((x1,y1), (x2,y2))
+                        self.msp.add_line(
+                            start=line[0],
+                            end=line[1],
+                            dxfattribs={"color": color, "layer": layername}
+                        )
+                    elif len(line) == 4:
+                        # 直线段格式 (x1,y1,x2,y2)
+                        self.msp.add_line(
+                            start=(line[0], line[1]),
+                            end=(line[2], line[3]),
+                            dxfattribs={"color": color, "layer": layername}
+                        )
+                    elif isinstance(line, LineString):
+                        # 处理 LineString
+                        coords = list(line.coords)
+                        if len(coords) >= 2:
+                            for start, end in zip(coords[:-1], coords[1:]):
+                                self.msp.add_line(
+                                    start=start,
+                                    end=end,
+                                    dxfattribs={"color": color, "layer": layername}
+                                )
+                            
+            # 处理 LineString
+            elif isinstance(ridges, LineString):
+                coords = list(ridges.coords)
+                if len(coords) >= 2:
+                    for start, end in zip(coords[:-1], coords[1:]):
+                        self.msp.add_line(
+                            start=start,
+                            end=end,
+                            dxfattribs={"color": color, "layer": layername}
+                        )
+                    
+            # 处理 MultiLineString
+            elif isinstance(ridges, MultiLineString):
+                for line in ridges.geoms:
+                    coords = list(line.coords)
+                    if len(coords) >= 2:
+                        for start, end in zip(coords[:-1], coords[1:]):
+                            self.msp.add_line(
+                                start=start,
+                                end=end,
+                                dxfattribs={"color": color, "layer": layername}
+                            )
+                            
+        except Exception as e:
+            log_mgr.log_error(f"添加线段失败: {str(e)}")
+            raise
+
     @classmethod
     def extract_polygons_from_dxf(cls, file_path, show_progress=True):
         """
-        从 DXF 文件中提取多边形数据
+        从 DXF 文件中提取多边形和直线数据
         :param file_path: DXF文件路径
         :param show_progress: 是否显示进度条
-        :return: 多边形列表
+        :return: 多边形和直线列表
         """
         if show_progress:
             print(f"正在读取DXF文件: {file_path}")
@@ -49,10 +325,11 @@ class dxfProcess:
             return []
 
         msp = doc.modelspace()
-        entities = list(msp.query("POLYLINE LWPOLYLINE"))
+        # 添加 LINE 实体到查询中
+        entities = list(msp.query("POLYLINE LWPOLYLINE LINE"))
         
         if show_progress:
-            print(f"找到 {len(entities)} 个多边形实体")
+            print(f"找到 {len(entities)} 个实体")
         
         polygons = []
 
@@ -66,6 +343,12 @@ class dxfProcess:
                 points = [vertex.dxf.location for vertex in entity.vertices]
                 if len(points) >= 3:
                     return points
+            elif entity.dxftype() == "LINE":
+                # 处理直线段
+                start = (entity.dxf.start.x, entity.dxf.start.y)
+                end = (entity.dxf.end.x, entity.dxf.end.y)
+                # 将直线段转换为两点的多边形
+                return [start, end]
             return None
         
         max_workers = max(1, os.cpu_count() // 2)
@@ -91,7 +374,7 @@ class dxfProcess:
                         polygons.append(result)
 
         if show_progress:
-            print(f"成功提取 {len(polygons)} 个多边形")
+            print(f"成功提取 {len(polygons)} 个几何实体")
         
         return polygons
     
@@ -165,85 +448,135 @@ class dxfProcess:
         new_doc.saveas(output_file)
         print(f"DXF 版本已升级到 {target_version}，保留所有数据，保存至 {output_file}")
         return True
-
-
-    
-    @classmethod
-    def save_to_dxf(cls, dxf_file, merged_lines, text_result, 
-                    reference_image=None, 
+   
+    def save_to_dxf(self, dxf_file, merged_lines, text_result, 
+                    image_path=None, 
                     simplified_centerlines=None, 
                     polygon=None):
+        """将处理结果保存到DXF文件
+        
+        Args:
+            dxf_file: DXF文件保存路径
+            merged_lines: 合并后的线段列表，格式为 [(x1,y1,x2,y2), ...] 或 [((x1,y1), (x2,y2)), ...]
+            text_result: OCR文本结果，格式为 (words, page_height)
+                        其中words为 [(text, x, y, width, height, angle), ...]
+            image_path: 可选，参考图像路径
+            simplified_centerlines: 可选，简化后的中心线
+            polygon: 可选，轮廓多边形
         """
-        将 Voronoi 图的边和文本追加到现有的 DXF 文件中
-        :param dxf_file: 现有的 DXF 文件路径
-        :param ridges: Voronoi ridges 列表（LineString 格式）
-        :param merged_lines: 合并后的线段列表，格式为 [(x1, y1, x2, y2), ...] 或 [((x1, y1), (x2, y2)), ...]
-        :param text_result: 文本结果列表，格式为 [(text, x0, y0, x1, y1), ...]
-        """
-        # try:
-        #     # 读取现有的 DXF 文件
-        #     doc = ezdxf.new(dxf_file)
-        # except IOError:
-        #     print(f"无法读取 DXF 文件: {dxf_file}")
-        #     return
-        doc = ezdxf.new('R2010')
-        msp = doc.modelspace()        
-        cls.setup_text_styles(doc)
-        if reference_image:
-            cls.add_image(doc, msp, reference_image)
-        if simplified_centerlines:
-            cls.add_lines(msp, simplified_centerlines, 9, '脊线')
-        if polygon:
-            cls.add_multipolygon(msp, polygon, 7, '轮廓')     
-        if merged_lines:
-            for line in merged_lines:
-                if len(line) == 4:  # (x1, y1, x2, y2)
-                    x1, y1, x2, y2 = line
-                elif len(line) == 2:  # ((x1, y1), (x2, y2))
-                    (x1, y1), (x2, y2) = line
-                else:
-                    raise ValueError(f"无效的线段格式: {line}")
-                msp.add_line(start=(x1, y1), end=(x2, y2), dxfattribs={"color": 3, 'layer': '中心线'})
-                   
-        if text_result:
-            words, page_height = text_result  
-            if page_height is not None and words is not None:
-                for text, x, y, width, height, angle in words:  
-                    if height <= 0:
-                        continue      
-                    cls.add_text(msp, text, (x, y), height, angle, layer='文本')  
-
-        # 保存修改后的 DXF 文件
-        doc.saveas(dxf_file)  
-    
+        try:
+            # 创建新的DXF文档
+            doc = ezdxf.new('R2010')
+            self.doc = doc
+            self.msp = doc.modelspace()
+            
+            # 设置图层和文字样式
+            self._setup_document()
+            
+            # 添加参考图像（如果有）
+            if image_path:
+                self.add_image(image_path)
+            
+            # 添加简化中心线（如果有）
+            if simplified_centerlines:
+                self.add_lines(simplified_centerlines, 9, '脊线')
+            
+            # 添加轮廓（如果有）
+            if polygon:
+                self.add_geometry(polygon, '轮廓', 7)
+            
+            # 添加中心线
+            if merged_lines:
+                for line in merged_lines:
+                    try:
+                        if len(line) == 4:  # (x1, y1, x2, y2)
+                            x1, y1, x2, y2 = line
+                            start, end = (x1, y1), (x2, y2)
+                        elif len(line) == 2:  # ((x1, y1), (x2, y2))
+                            start, end = line
+                        else:
+                            log_mgr.log_warning(f"跳过无效的线段格式: {line}")
+                            continue
+                            
+                        # 使用 add_line 而不是 add_lwpolyline
+                        self.msp.add_line(
+                            start=start,
+                            end=end,
+                            dxfattribs={
+                                "color": 3,
+                                'layer': '中心线',
+                                'linetype': 'CENTER'  # 添加中心线线型
+                            }
+                        )
+                    except Exception as e:
+                        log_mgr.log_error(f"添加线段失败: {str(e)}")
+            
+            # 添加文本
+            if text_result:
+                words, page_height = text_result
+                if words:
+                    for text, x, y, width, height, angle in words:
+                        try:
+                            if height <= 0:
+                                continue
+                            self.add_text(
+                                text=text,
+                                position=(x, y),
+                                height=height * 0.8,  # 稍微调整文本高度
+                                rotation=angle,
+                                layer='文本'
+                            )
+                        except Exception as e:
+                            log_mgr.log_error(f"添加文本失败: {text}, {str(e)}")
+            
+            # 保存DXF文件
+            doc.saveas(dxf_file)
+            log_mgr.log_info(f"DXF文件已保存: {dxf_file}")
+            
+        except Exception as e:
+            log_mgr.log_error(f"保存DXF文件失败: {str(e)}")
+            raise
 
     @staticmethod
-    def multipolygon_to_txt(multipolygon, filename="output.txt"):
+    def geometry_to_txt(geometries, filename="output.txt"):
+        """将几何实体（多边形和线段）保存为文本格式
+        
+        Args:
+            geometries: 从 extract_polygons_from_dxf 返回的几何实体列表
+            filename: 输出文件路径
+        """
         with open(filename, "w") as f:
-            # multipolygon 是从 extract_polygons_from_dxf 返回的点列表
-            for i, poly in enumerate(multipolygon):
-                if isinstance(poly, (Polygon, MultiPolygon)):
+            for i, geom in enumerate(geometries):
+                if isinstance(geom, (Polygon, MultiPolygon)):
                     # 处理 Polygon 或 MultiPolygon 对象
-                    if isinstance(poly, MultiPolygon):
-                        for j, polygon in enumerate(poly.geoms):
+                    if isinstance(geom, MultiPolygon):
+                        for j, polygon in enumerate(geom.geoms):
                             f.write(f"Polygon {i+1}-{j+1}:\n")
-                            dxfProcess._write_polygon_to_file(f, polygon)
+                            DXFProcessor._write_polygon_to_file(f, polygon)
                     else:
                         f.write(f"Polygon {i+1}:\n")
-                        dxfProcess._write_polygon_to_file(f, poly)
-                elif isinstance(poly, list):
-                    # 处理点列表
-                    f.write(f"Polygon {i+1}:\n")
-                    if poly:
+                        DXFProcessor._write_polygon_to_file(f, geom)
+                elif isinstance(geom, list):
+                    if len(geom) == 2 and all(isinstance(p, tuple) for p in geom):
+                        # 处理线段 [(x1,y1), (x2,y2)]
+                        f.write(f"Line {i+1}:\n")
+                        start, end = geom
+                        f.write(f"  Start: {start[0]}, {start[1]}\n")
+                        f.write(f"  End: {end[0]}, {end[1]}\n")
+                    elif len(geom) >= 3:
+                        # 处理多边形点列表
+                        f.write(f"Polygon {i+1}:\n")
                         f.write("  Exterior:\n")
-                        for x, y, _ in poly:
-                            f.write(f"    {x}, {y}\n")
+                        for point in geom:
+                            if len(point) >= 2:
+                                f.write(f"    {point[0]}, {point[1]}\n")
                     else:
-                        f.write("  Empty Polygon\n")
+                        f.write("  Empty Geometry\n")
                 else:
-                    print(f"未知的多边形数据类型: {type(poly)}")
+                    print(f"未知的几何数据类型: {type(geom)}")
 
-                f.write("\n")  # 分隔多边形
+                f.write("\n")  # 分隔几何实体
+                
         print(f"TXT 文件已保存为 {filename}")
 
     @staticmethod
@@ -297,26 +630,6 @@ class dxfProcess:
                     if file.lower() == font_name.lower():
                         return os.path.join(root, file)
         return None
-    
-    @classmethod
-    def setup_layers(cls, doc):
-       # 创建标准图层配置
-        layers = {
-            '轮廓': {'color': 7, 'linetype': 'CONTINUOUS', 'lineweight': 0.15},        
-            '脊线': {'color': 9, 'linetype': 'CONTINUOUS', 'lineweight': 0.15},        
-            '中心线': {'color': 3, 'linetype': 'CENTER', 'lineweight': 0.30},
-            '文本': {'color': 1, 'linetype': 'HIDDEN', 'lineweight': 0.15}            
-        }
-
-        # 初始化图层
-        for layer_name, props in layers.items():
-            if layer_name not in doc.layers:             
-                layer = doc.layers.add(name=layer_name)
-            else:               
-                layer = doc.layers.get(layer_name)       
-            layer.color = props['color']
-            layer.linetype = props['linetype']
-            layer.lineweight = props['lineweight'] 
             
     @classmethod
     def setup_text_styles(cls, doc):        
@@ -520,119 +833,68 @@ class dxfProcess:
             print(f"旧版本DXF使用替代颜色: {remap_color[closest]}")
 
     @classmethod
-    def add_text(cls, msp, text, position, height, rotation=0, layer='文本'):
-        text_entity = msp.add_text(
-            text,
-            dxfattribs={
-                'height': height,
-                "rotation": rotation,
-                'color': 1,
-                'layer': layer,
-                'style': '工程字体',  # 需要提前定义文字样式           
-            }
-        )
-        # 正确设置对齐基准点
-        text_entity.set_placement(
-            position,  # 基准点位置
-            align=TextEntityAlignment.LEFT 
-        )
-        return text_entity       
-    
-    @classmethod
-    def add_image(cls, doc, msp, reference_image, transparency=30):
-        try:            
-            # 获取图像实际路径（处理Windows路径）
-            img_path = os.path.abspath(reference_image).replace('\\', '/')
-            if not os.path.exists(img_path):
-                return
-            # 计算插入参数
-            img_width, img_height = cls.get_image_size(img_path)
-            scale_factor = 1  # 根据实际需求调整
-            
-            # 创建图像定义
-            image_def = doc.add_image_def(
-                filename=img_path,
-                size_in_pixel=(img_width, img_height)
-            )   
-            
-            ref_layer_name = 'REF_IMAGE'
-            if ref_layer_name not in doc.layers:
-                doc.layers.add(name=ref_layer_name, 
-                      dxfattribs={
-                          'color': 7,  # 白色                        
-                          'lineweight': 0  # 无边框
-                      })
-            layer = doc.layers.get('REF_IMAGE')
-            cls.set_transparency_effect(doc, layer, transparency)
-            
-            # 在图纸左下角插入图像（位置可调）
-            insert_point = (0, 0)
-            cls.add_image_with_compatibility(doc, image_def, insert_point, (img_width,img_height))
-        except Exception as e:
-            print(f"底图插入失败: {str(e)}")
-
-    @classmethod
-    def add_multipolygon(cls, msp, multipolygon, color, layername):
+    def add_multipolygon(cls, multipolygon, color, layername):
         if isinstance(multipolygon, MultiPolygon):
             for polygon in multipolygon.geoms:
-                for ring in [polygon.exterior] + list(polygon.interiors):  # 处理外环 + 内环
-                    points = list(ring.coords)  # 获取坐标
-                    msp.add_lwpolyline(
+                for ring in [polygon.exterior] + list(polygon.interiors):
+                    points = list(ring.coords)
+                    cls.msp.add_lwpolyline(
                         points, 
                         close=True,
-                        dxfattribs={"color": color, "layer": layername})  # 添加轻量级多段线 
-        
+                        dxfattribs={"color": color, "layer": layername})
+    
     @classmethod
-    def add_lines(cls, msp, ridges, color, layername):
+    def export_dxf_to_txt(cls, input_file, output_file):
         """
-        批量将 Voronoi 图的边添加到 DXF
-        :param msp: DXF ModelSpace
-        :param ridges: 可为 LineString、MultiLineString、List（包含 LineString 或 点集）
+        将DXF文件中的几何实体（多边形和线段）导出为文本格式
+        :param input_file: 输入DXF文件路径
+        :param output_file: 输出文本文件路径
         """
-        line_segments = []  # 缓存所有线段
-
-        def collect_lines(coords):
-            """收集线段"""
-            for start, end in zip(coords[:-1], coords[1:]):
-                line_segments.append((start, end))
-
-        # 处理各种输入类型
-        if isinstance(ridges, LineString):
-            collect_lines(ridges.coords)
-
-        elif isinstance(ridges, MultiLineString):
-            for line in ridges.geoms:
-                collect_lines(line.coords)
-
-        elif isinstance(ridges, list):
-            for child in ridges:
-                if isinstance(child, LineString):
-                    collect_lines(child.coords)
-                elif isinstance(child, MultiLineString):
-                    for line in child.geoms:
-                        collect_lines(line.coords)
-                elif isinstance(child, list) and len(child) >= 2:
-                    # 直接处理点集 (x, y) -> LWPOLYLINE
-                    msp.add_lwpolyline(child, close=False, dxfattribs={"color": color, "layer": layername})
-
-        # 批量添加线段
-        if line_segments:
-            msp.add_lwpolyline(
-                [p for segment in line_segments for p in segment],
-                close=False,
-                dxfattribs={"color": color, "layer": layername}
-            )
+        geometries = cls.extract_polygons_from_dxf(input_file)
+        cls.geometry_to_txt(geometries, output_file)
             
-    @staticmethod
-    def export_dxf_to_txt(input_file, output_file):
+    def _add_image_entity(self, image_def, insert_point: Tuple[float, float], size: Tuple[float, float]) -> None:
+        """添加图像实体到DXF文档
+        
+        Args:
+            image_def: 图像定义对象
+            insert_point: 插入点坐标 (x, y)
+            size: 图像尺寸 (width, height)
         """
-        将混合文本转换为分组文本
-        :param input_file: 输入文件路径
-        :param output_file: 输出文件路径
-        """
-        polygons = dxfProcess.extract_polygons_from_dxf(input_file)
-        dxfProcess.multipolygon_to_txt(polygons, output_file)
+        try:
+            # 根据DXF版本选择合适的添加方法
+            if self.doc.dxfversion >= 'AC1027':  # 2013+
+                image = self.msp.add_image(
+                    image_def=image_def,
+                    insert=insert_point,
+                    size=size,
+                    rotation=0,
+                    dxfattribs={
+                        'layer': 'REF_IMAGE'
+                    }
+                )
+                
+                # 设置图像透明度 (0-100 转换为 0-1)
+                if hasattr(image.dxf, 'transparency'):
+                    try:
+                        # ezdxf中transparency的值应该在0-1之间
+                        transparency_value = self.config.image_transparency / 100.0
+                        image.dxf.transparency = transparency_value
+                    except Exception as e:
+                        log_mgr.log_warning(f"设置图像透明度失败: {str(e)}")
+            else:
+                # 使用兼容模式添加图像
+                image = DXFProcessor._legacy_add_image(
+                    self.doc,
+                    image_def,
+                    insert_point,
+                    size
+                )
             
+        except Exception as e:
+            log_mgr.log_error(f"添加图像实体失败: {str(e)}")
+            raise
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="dxf 工具")
     subparsers = parser.add_subparsers(dest='command')
@@ -646,7 +908,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.command == 'export_dxf_to_txt':
-        dxfProcess.export_dxf_to_txt(args.input_file, args.output_file)
+        DXFProcessor.export_dxf_to_txt(args.input_file, args.output_file)
     else:
         print("请输入正确的命令")
                 

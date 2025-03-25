@@ -7,13 +7,11 @@ from tkinter import Tk, Button, Canvas, PhotoImage, Scale, HORIZONTAL, font
 from PIL import Image, ImageTk
 import threading
 from src.processors.ocr_processor import OCRProcess 
-from src.common.config_manager import ConfigManager
+from src.common.config_manager import config_manager
 from src.common.utils import Util
 import uuid
 from pathlib import Path
 import tempfile
-
-config_manager = ConfigManager.get_instance()
 class ImageApp:
     def __init__(self, root, image_path):
         self.root = root

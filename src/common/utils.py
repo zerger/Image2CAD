@@ -7,10 +7,266 @@ import cv2
 import psutil
 import shutil
 from pathlib import Path
-from typing import Union
+from typing import Union, Tuple, List, Set, Optional, Dict
+from dataclasses import dataclass
 from src.common.errors import ProcessingError, InputError, ResourceError, TimeoutError
+from src.common.log_manager import log_mgr
+
+@dataclass
+class SystemResources:
+    """系统资源信息"""
+    free_disk_space: int
+    total_disk_space: int
+    free_memory: int
+    total_memory: int
+    cpu_usage: float
+
+class FileValidator:
+    """文件验证器"""
+    
+    @staticmethod
+    def validate_image_file(input_path: Union[str, Path]) -> Path:
+        """验证图像文件
+        
+        Args:
+            input_path: 输入文件路径
+            
+        Returns:
+            验证后的Path对象
+            
+        Raises:
+            InputError: 当文件验证失败时
+        """
+        try:
+            # 统一路径处理
+            path = Path(input_path).resolve() if isinstance(input_path, (str, Path)) else \
+                   Path(input_path.filename).resolve()
+            
+            # 文件存在性检查
+            if not path.exists():
+                raise InputError(f"文件不存在: {path}")
+            if not path.is_file():
+                raise InputError(f"路径不是文件: {path}")
+                
+            # 扩展名检查
+            if not path.suffix.lower() in Util.get_allowed_extensions():
+                raise InputError(
+                    f"不支持的文件格式: {path.suffix}\n"
+                    f"支持的格式: {', '.join(Util.get_allowed_extensions())}"
+                )
+                
+            # 文件大小检查
+            max_size = 10 * 1024 * 1024  # 10MB
+            if path.stat().st_size > max_size:
+                raise InputError(
+                    f"文件过大: {path.stat().st_size / 1024 / 1024:.2f}MB\n"
+                    f"最大允许大小: {max_size / 1024 / 1024}MB"
+                )
+                
+            return path
+            
+        except InputError:
+            raise
+        except Exception as e:
+            raise InputError(f"文件验证失败: {str(e)}")
+
+class ImageProcessor:
+    """图像处理工具"""
+    
+    @staticmethod
+    def read_image(image_path: Union[str, Path], flags: int = cv2.IMREAD_GRAYSCALE) -> np.ndarray:
+        """安全地读取图像
+        
+        Args:
+            image_path: 图像文件路径
+            flags: OpenCV读取标志
+            
+        Returns:
+            图像数组
+            
+        Raises:
+            InputError: 当图像读取失败时
+        """
+        try:
+            path = Path(image_path)
+            with path.open('rb') as f:
+                img_array = np.asarray(bytearray(f.read()), dtype=np.uint8)
+                img = cv2.imdecode(img_array, flags)
+                if img is None:
+                    raise InputError(f"无法读取图像: {path}")
+                return img
+        except Exception as e:
+            raise InputError(f"图像读取失败: {str(e)}")
+
+    @staticmethod
+    def write_image(
+        img: np.ndarray,
+        output_path: Union[str, Path],
+        ext: str = '.png'
+    ) -> bool:
+        """安全地写入图像
+        
+        Args:
+            img: 图像数组
+            output_path: 输出路径
+            ext: 文件扩展名
+            
+        Returns:
+            是否成功
+        """
+        try:
+            output_path = Path(output_path)
+            
+            # 确保输出目录存在
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # 处理扩展名
+            if not output_path.suffix:
+                output_path = output_path.with_suffix(ext.lower())
+            
+            # 验证扩展名
+            if output_path.suffix.lower() not in Util.get_allowed_extensions():
+                raise InputError(f"不支持的文件格式: {output_path.suffix}")
+            
+            # 根据文件类型选择保存方式
+            if output_path.suffix.lower() == '.pbm':
+                return ImageProcessor._save_as_pbm(img, output_path)
+            else:
+                return ImageProcessor._save_as_image(img, output_path)
+                
+        except Exception as e:
+            log_mgr.log_error(f"图像保存失败: {str(e)}")
+            return False
+
+    @staticmethod
+    def _save_as_pbm(img: np.ndarray, output_path: Path) -> bool:
+        """保存为PBM格式"""
+        try:
+            # 确保是二值图像
+            if len(img.shape) > 2:
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            _, binary = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)
+            
+            # 转换为PBM格式（1表示黑色）
+            binary = (binary == 0).astype(np.uint8)
+            
+            # 计算每行字节数
+            width_bytes = (binary.shape[1] + 7) // 8
+            
+            with output_path.open('wb') as f:
+                # 写入头部
+                f.write(b'P4\n')
+                f.write(f'{binary.shape[1]} {binary.shape[0]}\n'.encode())
+                
+                # 写入数据
+                for row in binary:
+                    packed = np.packbits(row[:width_bytes * 8])
+                    f.write(packed.tobytes())
+                    
+            return True
+            
+        except Exception as e:
+            log_mgr.log_error(f"PBM保存失败: {str(e)}")
+            return False
+
+class SystemMonitor:
+    """系统资源监控"""
+    
+    @staticmethod
+    def get_system_resources() -> SystemResources:
+        """获取系统资源信息"""
+        try:
+            # 磁盘空间
+            disk = psutil.disk_usage('/')
+            
+            # 内存信息
+            memory = psutil.virtual_memory()
+            
+            # CPU使用率
+            cpu_usage = psutil.cpu_percent(interval=1)
+            
+            return SystemResources(
+                free_disk_space=disk.free,
+                total_disk_space=disk.total,
+                free_memory=memory.available,
+                total_memory=memory.total,
+                cpu_usage=cpu_usage
+            )
+        except Exception as e:
+            log_mgr.log_error(f"获取系统资源信息失败: {str(e)}")
+            raise ResourceError("无法获取系统资源信息")
+
+    @staticmethod
+    def check_system_resources(
+        min_disk_space: int = 500 * 1024 * 1024,  # 500MB
+        min_memory: int = 2 * 1024 * 1024 * 1024,  # 2GB
+        max_cpu_usage: float = 90.0  # 90%
+    ) -> None:
+        """检查系统资源是否满足要求"""
+        try:
+            resources = SystemMonitor.get_system_resources()
+            
+            if resources.free_disk_space < min_disk_space:
+                raise ResourceError(
+                    f"磁盘空间不足: {resources.free_disk_space / 1024 / 1024:.2f}MB\n"
+                    f"需要至少: {min_disk_space / 1024 / 1024:.2f}MB"
+                )
+                
+            if resources.free_memory < min_memory:
+                raise ResourceError(
+                    f"内存不足: {resources.free_memory / 1024 / 1024 / 1024:.2f}GB\n"
+                    f"需要至少: {min_memory / 1024 / 1024 / 1024:.2f}GB"
+                )
+                
+            if resources.cpu_usage > max_cpu_usage:
+                raise ResourceError(
+                    f"CPU使用率过高: {resources.cpu_usage:.1f}%\n"
+                    f"最大允许: {max_cpu_usage:.1f}%"
+                )
+                
+        except ResourceError:
+            raise
+        except Exception as e:
+            raise ResourceError(f"系统资源检查失败: {str(e)}")
 
 class Util:
+    """工具类，包含静态工具方法"""
+    
+    _ALLOWED_EXTENSIONS: Set[str] = {
+        '.png', '.jpg', '.jpeg', '.bmp', 
+        '.tiff', '.tif', '.webp', '.pbm'
+    }
+
+    @staticmethod
+    def get_allowed_extensions() -> Set[str]:
+        """获取允许的文件扩展名"""
+        return Util._ALLOWED_EXTENSIONS
+
+    @staticmethod
+    def default_output_path(input_path: Union[str, Path], suffix: str) -> Path:
+        """生成默认输出路径"""
+        path = Path(input_path)
+        return path.parent / f"{path.stem.replace(' ', '_')}_{suffix}"
+
+    @staticmethod
+    def ensure_directory(path: Union[str, Path]) -> Path:
+        """确保目录存在"""
+        path = Path(path)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @staticmethod
+    def remove_directory(path: Union[str, Path]) -> bool:
+        """安全地删除目录"""
+        try:
+            path = Path(path)
+            if path.exists():
+                shutil.rmtree(path)
+            return True
+        except Exception as e:
+            log_mgr.log_error(f"删除目录失败: {str(e)}")
+            return False
+
     @staticmethod
     def get_disk_space(path='/'):
         """获取磁盘剩余空间（跨平台）"""
@@ -130,13 +386,6 @@ class Util:
         if free_space < 500 * 1024 * 1024:  # 500MB
             raise ResourceError("磁盘空间不足（需要至少500MB空闲空间）")
        
-    @staticmethod
-    def default_output_path(input_path, suffix):
-        """生成默认输出路径"""
-        base_dir = Path(input_path).parent / 'output'
-        file_name = Path(input_path).stem.replace(" ", "_")
-        return os.path.join(base_dir, f"{file_name}_{suffix}")    
-    
     @staticmethod
     def remove_directory(dir_path):
         try:           

@@ -12,10 +12,9 @@ from .task_manager import task_manager
 from .websocket_manager import websocket_manager
 from .file_utils import file_utils
 from src.common.utils import Util  # 假设 Util 在 common.utils 中
-from src.common.config_manager import ConfigManager
+from src.common.config_manager import config_manager
 
 # 获取允许的文件扩展名
-config_manager = ConfigManager()
 ALLOWED_IMAGE_EXTENSIONS = config_manager.get_allow_imgExt()
 
 # 创建路由器

@@ -6,11 +6,8 @@ import sys
 import argparse
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
-from src.common.config_manager import ConfigManager
+from src.common.config_manager import config_manager
 from src.common.utils import Util
-
-config_manager = ConfigManager.get_instance()
-
 class TrainSHX_data:
     def __init__(self, shx_font=None, ttf_font=None, output_dir=None, train_model=None  ):
         self.shx_font = shx_font

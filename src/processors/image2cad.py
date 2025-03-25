@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations  # Python 3.7+ 的向前兼容
 import os
 import pymupdf
 import argparse
@@ -25,7 +26,7 @@ import time
 import tempfile
 from functools import wraps
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Union, Dict, Any, Sequence
 from PIL import Image, ImageEnhance, ImageOps
 from func_timeout import func_timeout, FunctionTimedOut
 import shutil
@@ -33,22 +34,21 @@ import time
 import sys
 import threading
 
-from src.Centerline.geometry import Centerline
-from src.processors.ocr_processor import OCRProcess
-from src.processors.dxf_processor import dxfProcess
-from src.common.config_manager import ConfigManager
+from src.common.config_manager import config_manager
 from src.common.errors import ProcessingError, InputError, ResourceError, TimeoutError
 from src.common.utils import Util
-from src.common.log_manager import LogManager, setup_logging
+from src.common.log_manager import log_mgr
 from src.training.train_shx import TrainSHX_data
 from shapely.validation import make_valid
 import tqdm    
+from dataclasses import dataclass
+from typing import List, Union, Dict, Any
+from src.processors.dxf_processor import DXFProcessor
+from src.Centerline.geometry import Centerline
+from src.processors.ocr_processor import OCRProcessor
 
- 
 print_lock = threading.Lock()  
-log_mgr = LogManager().get_instance()
-config_manager = ConfigManager.get_instance()
-allow_imgExt = ConfigManager.get_allow_imgExt()
+allow_imgExt = config_manager.get_allow_imgExt()
 
 def retry(max_attempts: int = 3, delay: int = 1):
     """重试装饰器"""
@@ -98,143 +98,6 @@ def parallel_simplify(lines, tolerance=0.5):
             ))
         
     return MultiLineString([f.result() for f in as_completed(futures)])
-
-def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Optional[str]]:
-    """
-    安全处理单个文件的全流程
-    
-    :param input_path: 输入文件路径
-    :param output_folder: 输出目录
-    :return: (是否成功, 输出文件路径)
-    """
-    fn_start_time = time.time()
-    temp_files = []
-    
-    setup_logging(console=True)
-    dxfProcess.setup_dxf_logging()
-    try:
-        # === 阶段1：输入验证 ===
-        log_mgr.log_info(f"开始处理文件: {input_path}")
-        Util.validate_image_file(input_path)
-        Util.check_system_resources()
-        
-        # === 阶段2：准备输出 ===
-        os.makedirs(output_folder, exist_ok=True)
-        if not os.access(output_folder, os.W_OK):
-            raise PermissionError(f"输出目录不可写: {output_folder}")
-            
-        base_name = Path(input_path).stem
-        output_dxf = Path(output_folder) / f"{base_name}.dxf"
-        
-        # === 阶段3：创建临时工作区 ===
-        # with tempfile.TemporaryDirectory(prefix="img2cad_") as tmp_dir:
-        start_time = time.time()
-        # OCR处理       
-        log_mgr.log_info("执行OCR处理...")
-        ocr_process = OCRProcess(config_manager.get_ocr_mode())      
-        text_positions = ocr_process.get_file_rapidOCR(input_path, scale_factor=2) 
-        log_mgr.log_processing_time("OCR处理", start_time)
-        start_time = time.time()
-        
-        # 转换PBM
-        pbm_path = Path(output_folder) / f"{base_name}.pbm"
-        log_mgr.log_info("转换图像格式...")
-        convert_png_to_pbm(input_path, str(pbm_path))
-        log_mgr.log_processing_time("图像格式转换", start_time)
-        start_time = time.time()
-        
-        # 转换DXF（带重试和超时）
-        log_mgr.log_info("转换DXF格式...")
-        convert_pbm_with_retry(str(pbm_path), str(output_dxf))
-        log_mgr.log_processing_time("DXF转换", start_time)
-        start_time = time.time()
-        
-        # === 阶段4：后处理 ===       
-        log_mgr.log_info("提取多边形...")
-        polygons = None
-        polygons = dxfProcess.extract_polygons_from_dxf(str(output_dxf), show_progress=True)
-        log_mgr.log_processing_time("多边形提取", start_time)
-        start_time = time.time()     
-        
-         # === 阶段5：生成中心线 ===
-        log_mgr.log_info("生成中心线...")
-        centerline = None
-        with ThreadPoolExecutor() as executor:
-            multi_polygon = convert_to_multipolygon(polygons)
-            if multi_polygon:                   
-                # filtered_multiPolygon = filter_polygons_by_textbbox(multi_polygon, text_positions, buffer_ratio=0.15, show_progress=True)   
-                inter_dist = float(config_manager.get_setting('interpolation_distance', fallback=3))
-                # 确保输入几何体有效
-                if not multi_polygon.is_valid:
-                    multi_polygon = make_valid(multi_polygon)
-                
-                # 使用buffer(0)修复可能的拓扑问题
-                multi_polygon = multi_polygon.buffer(0)
-                
-                centerline = Centerline(
-                        multi_polygon,
-                        interpolation_distance=inter_dist,
-                        simplify_tolerance=0.5,                       
-                        use_multiprocessing=True,
-                        show_progress=True
-                        )            
-                log_mgr.log_processing_time("中心线生成", start_time)
-                start_time = time.time()   
-        
-        # === 阶段6：中心线分析 ===       
-        log_mgr.log_info("中心线分析...")        
-        try:
-            # 确保使用centerline的geometry属性
-            if hasattr(centerline, 'geometry'):
-                merged_lines = merge_lines_with_hough(centerline.geometry, 0)
-            else:
-                merged_lines = merge_lines_with_hough(centerline, 0)
-        except Exception as e:
-            print(f"合并线段时出错: {e}")
-            # 回退到直接使用centerline对象
-            if hasattr(centerline, 'geoms'):
-                # 如果centerline是几何集合，直接提取坐标
-                merged_lines = []
-                for geom in centerline.geoms:
-                    if hasattr(geom, 'coords'):
-                        coords = list(geom.coords)
-                        if len(coords) >= 2:
-                            merged_lines.append(coords)
-            else:
-                print("无法处理centerline对象，跳过线段合并")
-                merged_lines = []
-        
-        filtered_lines = filter_line_by_textbbox(merged_lines, text_positions)   
-        log_mgr.log_processing_time("中心线分析", start_time)
-        start_time = time.time()   
-                 
-        # === 阶段7：结果整合 ===
-        log_mgr.log_info("输出结果...")
-        final_output = Path(output_folder) / f"output_{base_name}.dxf"
-        # shutil.copy2(output_dxf, final_output)
-        # dxfProcess.upgrade_dxf(output_dxf, final_output, "R2010")         
-        dxfProcess.save_to_dxf(str(final_output), filtered_lines, text_positions, input_path)
-        log_mgr.log_processing_time("结果输出", start_time)
-        start_time = time.time()
-        
-        log_mgr.log_info(f"成功处理文件: {input_path}")
-        log_mgr.log_info(f"结果输出文件: {final_output}")
-        
-        return True, str(final_output)
-            
-    except InputError as e:
-        log_mgr.log_exception(f"输入错误: {e}")
-    except ResourceError as e:
-        log_mgr.log_exception(f"系统资源错误: {e}")
-        raise  # 向上传递严重错误
-    except TimeoutError as e:
-        log_mgr.log_exception(f"处理超时: {e}")
-    except Exception as e:
-        log_mgr.log_exception(f"未处理的异常发生: {e}")
-    finally:        
-        log_mgr.log_processing_time(f"{base_name} 结束", fn_start_time)
-    
-    return False, None
 
 # 将 PNG 转换为 PBM 格式
 def convert_png_to_pbm(png_path, pbm_path):
@@ -663,20 +526,6 @@ def convert_pbm_to_dxf(pbm_path, dxf_path):
             os.remove(dxf_path)
         return False  # 返回失败标识   
 
-def preprocess_image(image_path):
-    # 读取灰度图
-    image = Util.opencv_read(image_path)
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    
-    # OTSU 二值化
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-    # 形态学操作去除线条（适用于去除引线标注）
-    kernel = np.ones((1, 5), np.uint8)  # 细长核更适用于引线
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-
-    return binary
-
 def convert_to_multipolygon(polygons):
     """
     将多边形坐标列表转换为 MultiPolygon。
@@ -697,40 +546,6 @@ def convert_to_multipolygon(polygons):
             print(f"Error processing polygon: Error: {e}")
     
     return MultiPolygon(valid_polygons)
-
-# 获取路径的边界框（最小矩形框）
-def get_path_bbox(path_data):
-    # 这里只是一个简化的版本，实际的路径解析可能更复杂
-    # 假设路径数据是一个简单的矩形或直线
-    # 这里暂时返回一个假设的边界框
-    return (0, 0, 100, 100)  # 示例返回一个固定边界框
-
-# 判断路径边界框和文本边界框是否重叠
-def path_bbox_overlaps(path_bbox, text_bbox):
-    px1, py1, px2, py2 = path_bbox
-    tx1, ty1, tx2, ty2 = text_bbox
-    return not (px2 < tx1 or px1 > tx2 or py2 < ty1 or py1 > ty2)
-
-# 从文本块的位置信息中移除与文本重叠的路径
-def remove_paths_in_text_area(svg_file, text_positions):
-    tree = ET.parse(svg_file)
-    root = tree.getroot()
-
-    # 查找所有路径
-    namespaces = {'svg': 'http://www.w3.org/2000/svg'}
-    paths = root.findall('.//svg:path', namespaces=namespaces)
-
-    for path in paths:
-        path_coords = path.attrib.get('d')  # 获取路径数据
-        path_bbox = get_path_bbox(path_coords)  # 获取路径的边界框
-
-        # 遍历文本区域，检查路径是否与文本区域重叠
-        for text, tx, ty, tw, th in text_positions:
-            text_bbox = (tx, ty, tx + tw, ty + th)
-            if path_bbox_overlaps(path_bbox, text_bbox):
-                root.remove(path)  # 删除重叠的路径
-
-    tree.write('output_no_text_paths.svg')  # 保存修改后的 SVG 
  
 def pdf_page_to_image(page, page_num, image_path, dpi, image_format='PNG'):
     """ 处理单个 PDF 页面并保存为 PNG """
@@ -801,93 +616,72 @@ def _process_pdf_page(page, page_num, output_dir, output_type='png', dpi=None):
     else:
         print(f"Unsupported output type: {output_type}")
                 
-def pdf_to_images(pdf_path, output_dir=None, output_type='png', dpi=None):
-    """ 并行转换 PDF 为图像 """
+def pdf_to_images(pdf_path: str, 
+                 output_dir: Optional[str] = None, 
+                 output_type: str = 'png', 
+                 dpi: Optional[int] = None,
+                 max_workers: Optional[int] = None) -> None:
+    """并行转换 PDF 为图像
+    
+    Args:
+        pdf_path: PDF文件路径
+        output_dir: 输出目录（默认为PDF同目录下的pdf_images）
+        output_type: 输出格式（默认为png）
+        dpi: 输出DPI（默认从配置获取）
+        max_workers: 并行处理的工作线程数（默认为CPU核心数的一半）
+    """
     try:
         import pymupdf  # 延迟导入减少依赖
     except ImportError:
         raise RuntimeError("PDF处理需要PyMuPDF: pip install pymupdf")
+        
     pdf_Dir = os.path.abspath(pdf_path)
     dir = os.path.dirname(pdf_Dir)
 
     if output_dir is None:      
         output_dir = Util.default_output_path(pdf_path, 'pdf_images')
 
-     # 从配置获取参数 
+    # 从配置获取参数 
     config_manager.apply_security_settings()    
     if output_dir is None:
         output_dir = config_manager.get_setting(key='pdf_output_dir', fallback='./pdf_images')
     if dpi is None:
         dpi = int(config_manager.get_setting(key='pdf_export_dpi', fallback=200))
-    max_workers = int(config_manager.get_setting(key='max_workers', fallback=os.cpu_count()//2))
+    if max_workers is None:
+        max_workers = int(config_manager.get_setting(key='max_workers', fallback=os.cpu_count()//2))
+        
     os.makedirs(output_dir, exist_ok=True)
     
     # 显示当前配置参数
     log_mgr.log_info("\n当前PDF转换参数：")
+    log_mgr.log_info(f"├─ 输入文件：{os.path.abspath(pdf_path)}")
     log_mgr.log_info(f"├─ 输出目录：{os.path.abspath(output_dir)}")
     log_mgr.log_info(f"├─ 解析精度：{dpi} DPI")
     log_mgr.log_info(f"├─ 输出类型：{output_type}")
+    log_mgr.log_info(f"├─ 工作线程：{max_workers}")
 
     try:
         doc = pymupdf.open(pdf_path)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(_process_pdf_page, doc[page_num], page_num, output_dir, output_type, dpi)
-                       for page_num in range(len(doc))]
+            futures = [
+                executor.submit(
+                    _process_pdf_page, 
+                    doc[page_num], 
+                    page_num, 
+                    output_dir, 
+                    output_type, 
+                    dpi
+                )
+                for page_num in range(len(doc))
+            ]
 
             # 等待所有任务完成
             for future in as_completed(futures):
                 future.result()
 
     except Exception as e:
-        print(f"转换 PDF 为图像时出错：{e}")
-        
-def png_to_dxf(input_path, output_folder=None):
-    """
-    将 PNG 文件或文件夹中的 PNG 转换为 DXF 格式，经过 PBM 格式的中间步骤。
-    如果输入是文件夹，则遍历其中的 PNG 文件处理；
-    如果输入是文件，则只处理该文件。
-    """
-    # 如果输入是文件夹
-    if os.path.isdir(input_path):
-        # 如果没有指定输出文件夹，则默认创建 output_svg 文件夹
-        if output_folder is None:
-            output_folder = os.path.join(input_path, "cad_output")
-        
-        # 如果输出文件夹不存在，则创建它
-        if not os.path.exists(output_folder):
-            os.makedirs(output_folder)
-        
-        # 遍历文件夹中的所有 PNG 文件
-        process_files_in_parallel(input_path, output_folder)             
-    # 如果输入是文件
-    elif os.path.isfile(input_path) and Util.has_valid_files(input_path, allow_imgExt):
-        # 如果没有指定输出文件夹，则使用输入文件的目录
-        if output_folder is None:
-            output_folder = Util.default_output_path(input_path, 'cad')
-        
-        # 确保输出文件夹存在
-        if not os.path.exists(output_folder):
-            os.makedirs(output_folder)
-        
-        # 处理单个文件
-        process_single_file(input_path, output_folder)
-    else:
-        raise ValueError(f"Invalid input path: {input_path}. Must be a .png file or a folder containing .png files.")    
+        log_mgr.log_error(f"转换 PDF 为图像时出错：{e}")
 
-    
-def process_files_in_parallel(input_path, output_folder, max_processes=None):
-    # 获取所有文件
-    filenames = [filename for filename in os.listdir(input_path) if filename.endswith(".png")]
-    
-    # 如果没有指定最大并发数，则使用默认值（CPU 核心数的一半）
-    if max_processes is None:
-        max_processes = max(1, cpu_count() // 2)
-    
-    # 创建进程池，限制并发数
-    with Pool(processes=max_processes) as pool:
-        # 使用 starmap 函数并行处理每个文件
-        pool.starmap(process_single_file, [(os.path.join(input_path, filename), output_folder) for filename in filenames])
- 
 def repair_multipolygon(multi_poly, max_processes=None):
     """修复 MultiPolygon 几何体，使用并行处理每个子多边形"""
     valid_polys = []
@@ -963,6 +757,303 @@ def process_geometry_for_centerline(simplified_polygon, interpolation_distance=0
         print(f"Error calculating centerlines: {e}")
         return  
 
+@dataclass
+class ProcessingParams:
+    """处理参数配置"""
+    dpi: int = 200
+    format: str = 'dxf'
+    interpolation_distance: float = 0.5
+    text_buffer_ratio: float = 0.15
+    potrace_params: Dict[str, str] = None
+    
+    def __post_init__(self):
+        if self.potrace_params is None:
+            self.potrace_params = {
+                '-z': 'majority',     # 追踪方式
+                '-t': '10',          # 拐角阈值
+                '-a': '0.15',        # 拐角平滑度
+                '-O': '1',           # 优化等级
+                '-u': '3',           # 输出单位
+                '-n': None           # 关闭曲线细分
+            }
+    
+    @classmethod
+    def from_config(cls) -> 'ProcessingParams':
+        """从配置管理器创建参数"""
+        return cls(
+            dpi=int(config_manager.get_setting('pdf_export_dpi', 200)),
+            format=config_manager.get_setting('output_format', 'dxf'),
+            interpolation_distance=float(config_manager.get_setting('interpolation_distance', 0.5)),
+            text_buffer_ratio=float(config_manager.get_setting('text_buffer_ratio', 0.15))
+        )
+
+class ResourceManager:
+    """资源管理器"""
+    def __init__(self):
+        self.temp_files: List[Path] = []
+        
+    def create_temp_file(self, suffix: str = None) -> Path:
+        """创建临时文件"""
+        temp_file = Path(tempfile.mktemp(suffix=suffix))
+        self.temp_files.append(temp_file)
+        return temp_file
+        
+    def cleanup(self):
+        """清理临时文件"""
+        for temp_file in self.temp_files:
+            try:
+                if temp_file.exists():
+                    temp_file.unlink()
+            except Exception as e:
+                log_mgr.log_warn(f"清理临时文件失败: {str(e)}")
+
+class Image2CADProcessor:
+    """图像转CAD处理器"""
+    
+    def __init__(self, params: Optional[ProcessingParams] = None):
+        self.params = params or ProcessingParams.from_config()
+        self.logger = log_mgr
+        self.resource_manager = ResourceManager()
+        self.dxfProcess = DXFProcessor()
+        
+    def process_file(self, input_path: Union[str, Path], 
+                    output_path: Optional[Union[str, Path]] = None) -> Tuple[bool, Optional[str]]:
+        """处理单个文件"""
+        try:
+            input_path = Path(input_path)
+            self._validate_input(input_path)
+            
+            # 设置输出路径
+            output_path = Path(output_path) if output_path else self._get_default_output(input_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # 执行处理流程
+            return self._execute_processing_pipeline(input_path, output_path)
+            
+        except Exception as e:
+            self.logger.log_error(f"处理失败: {str(e)}")
+            return False, None
+        finally:
+            self.resource_manager.cleanup()
+            
+    def _validate_input(self, input_path: Path) -> None:
+        """验证输入"""
+        if not input_path.exists():
+            raise FileNotFoundError(f"输入文件不存在: {input_path}")
+        if not input_path.suffix.lower() in allow_imgExt:
+            raise ValueError(f"不支持的文件格式: {input_path.suffix}")
+        Util.check_system_resources()
+            
+    def _execute_processing_pipeline(self, input_path: Path, output_path: Path) -> Tuple[bool, Optional[str]]:
+        """执行处理流程"""
+        start_time = time.time()
+        
+        try:
+            # 1. OCR处理
+            self.logger.log_info("执行OCR处理...")
+            text_positions = self._process_ocr(input_path)
+            self.logger.log_processing_time("OCR处理", start_time)
+            
+            # 2. 图像预处理和PBM转换
+            start_time = time.time()
+            self.logger.log_info("转换图像格式...")
+            pbm_path = self._convert_to_pbm(input_path)
+            self.logger.log_processing_time("图像格式转换", start_time)
+            
+            # 3. DXF转换
+            start_time = time.time()
+            self.logger.log_info("转换DXF格式...")
+            dxf_path = self._convert_to_dxf(pbm_path)
+            self.logger.log_processing_time("DXF转换", start_time)
+            
+            # 4. 提取和处理多边形
+            start_time = time.time()
+            self.logger.log_info("提取多边形...")
+            polygons = self._extract_polygons(dxf_path)
+            self.logger.log_processing_time("多边形提取", start_time)
+            
+            # 5. 生成中心线
+            start_time = time.time()
+            self.logger.log_info("生成中心线...")
+            centerline = self._generate_centerline(polygons)
+            self.logger.log_processing_time("中心线生成", start_time)
+            
+            # 6. 处理中心线
+            start_time = time.time()
+            self.logger.log_info("中心线分析...")
+            processed_lines = self._process_centerline(centerline, text_positions)
+            self.logger.log_processing_time("中心线分析", start_time)
+            
+            # 7. 保存结果
+            start_time = time.time()
+            self.logger.log_info("输出结果...")
+            base_name = Path(input_path).stem
+            os.makedirs(output_path, exist_ok=True)
+            final_output = Path(output_path) / f"output_{base_name}.dxf"
+            self._save_result(str(final_output), processed_lines, text_positions, input_path)
+            self.logger.log_processing_time("结果输出", start_time)
+            
+            self.logger.log_info(f"成功处理文件: {input_path}")
+            return True, str(final_output)
+            
+        except Exception as e:
+            self.logger.log_error(f"处理失败: {str(e)}")
+        return False, None
+
+    def _process_ocr(self, input_path: Path):
+        """OCR处理"""
+        try:           
+            ocr_process = OCRProcessor(config_manager.get_ocr_mode())
+            return ocr_process.get_file_rapidOCR(str(input_path), scale_factor=2)
+        except Exception as e:
+            self.logger.log_error(f"OCR处理失败: {str(e)}")
+            return None, None  # 返回空结果而不是直接失败
+
+    def _convert_to_pbm(self, input_path: Path) -> Path:
+        """转换为PBM格式"""
+        pbm_path = self.resource_manager.create_temp_file('.pbm')
+        convert_png_to_pbm(str(input_path), str(pbm_path))
+        return pbm_path
+        
+    def _convert_to_dxf(self, pbm_path: Path) -> Path:
+        """转换为DXF格式"""
+        dxf_path = self.resource_manager.create_temp_file('.dxf')
+        convert_pbm_with_retry(str(pbm_path), str(dxf_path))
+        return dxf_path
+        
+    def _extract_polygons(self, dxf_path: Path):
+        """提取多边形"""
+        polygons =self.dxfProcess.extract_polygons_from_dxf(str(dxf_path), show_progress=True)
+        return convert_to_multipolygon(polygons)
+        
+    def _generate_centerline(self, multi_polygon):
+        """生成中心线"""       
+        if not multi_polygon:
+            return None
+            
+        if not multi_polygon.is_valid:
+            multi_polygon = make_valid(multi_polygon)
+        multi_polygon = multi_polygon.buffer(0)
+        
+        return Centerline(
+            multi_polygon,
+            interpolation_distance=self.params.interpolation_distance,
+            simplify_tolerance=0.5,
+            use_multiprocessing=True,
+            show_progress=True
+        )
+        
+    def _process_centerline(self, centerline, text_positions):
+        """处理中心线"""
+        if centerline is None:
+            return []
+            
+        try:
+            if hasattr(centerline, 'geometry'):
+                merged_lines = merge_lines_with_hough(centerline.geometry, 0)
+            else:
+                merged_lines = merge_lines_with_hough(centerline, 0)
+        except Exception as e:
+            self.logger.log_error(f"合并线段失败: {e}")
+            merged_lines = self._fallback_centerline_processing(centerline)
+            
+        return filter_line_by_textbbox(merged_lines, text_positions)
+        
+    def _fallback_centerline_processing(self, centerline):
+        """中心线处理回退方案"""
+        if hasattr(centerline, 'geoms'):
+            merged_lines = []
+            for geom in centerline.geoms:
+                if hasattr(geom, 'coords'):
+                    coords = list(geom.coords)
+                    if len(coords) >= 2:
+                        merged_lines.append(coords)
+            return merged_lines
+        return []
+        
+    def _save_result(self, output_path: Path, processed_lines, text_positions, input_path):
+        """保存结果"""
+        try:
+            self.dxfProcess.save_to_dxf(
+                str(output_path),
+                processed_lines,  # 现在可以包含直线段
+                text_positions,
+                str(input_path)
+            )
+        except Exception as e:
+            self.logger.log_error(f"保存DXF结果失败: {str(e)}")
+            raise
+        
+    def _get_default_output(self, input_path: Path) -> Path:
+        """获取默认输出路径"""
+        return input_path.parent / f"output_{input_path.stem}.{self.params.format}"
+        
+    def process_batch(self, input_dir: Union[str, Path], 
+                     output_dir: Optional[Union[str, Path]] = None,
+                     max_workers: Optional[int] = None) -> None:
+        """批量处理文件
+        
+        Args:
+            input_dir: 输入目录路径
+            output_dir: 输出目录路径（默认为input_dir/cad_output）
+            max_workers: 并行处理的工作线程数（默认为CPU核心数的一半）
+        """
+        input_dir = Path(input_dir)
+        if not input_dir.is_dir():
+            raise NotADirectoryError(f"输入路径不是目录: {input_dir}")
+            
+        output_dir = Path(output_dir) if output_dir else input_dir / 'cad_output'
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 获取所有支持的图像文件
+        image_files = [
+            f for f in input_dir.iterdir()
+            if f.suffix.lower() in allow_imgExt
+        ]
+        
+        if not image_files:
+            self.logger.log_warn(f"目录中没有支持的图像文件: {input_dir}")
+            return
+            
+        # 如果没有指定max_workers，从配置获取
+        if max_workers is None:
+            max_workers = int(config_manager.get_setting('max_workers', os.cpu_count()//2))
+            
+        self.logger.log_info(f"开始批量处理，使用 {max_workers} 个工作线程")
+        self.logger.log_info(f"发现 {len(image_files)} 个待处理文件")
+        
+        # 添加处理计数器
+        success_count = 0
+        failed_count = 0
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(
+                    self.process_file,
+                    image_file,
+                    output_dir / f"{image_file.stem}.{self.params.format}"
+                )
+                for image_file in image_files
+            ]
+            
+            for future in tqdm.tqdm(
+                as_completed(futures),
+                total=len(futures),
+                desc="处理进度"
+            ):
+                try:
+                    success, _ = future.result()
+                    if success:
+                        success_count += 1
+                    else:
+                        failed_count += 1
+                except Exception as e:
+                    self.logger.log_error(f"批处理任务失败: {str(e)}")
+                    failed_count += 1
+                    
+        # 输出处理统计
+        self.logger.log_info(f"批处理完成: 成功 {success_count} 个, 失败 {failed_count} 个")
+
 def main():    
     # 设置命令行参数解析器
     parser = argparse.ArgumentParser(
@@ -994,35 +1085,68 @@ def main():
     convert_group = parser.add_argument_group('转换参数')
     convert_group.add_argument('--dpi', type=int, default=200,
                               help="图像处理DPI（默认: 200）")
-    convert_group.add_argument('--format', choices=['dxf', 'svg', 'dwg', 'png', 'tiff'], default='dxf',
+    convert_group.add_argument('--format', 
+                              choices=['dxf', 'svg', 'dwg', 'png', 'tiff'], 
+                              default='dxf',
                               help="输出格式（默认: dxf）")    
-    convert_group.add_argument('--overwrite', action='store_true',
-                              help="覆盖已存在文件")   
+    convert_group.add_argument('--overwrite', 
+                              action='store_true',
+                              help="覆盖已存在文件")
+    convert_group.add_argument('--workers', 
+                              type=int,
+                              help="并行处理的工作线程数（默认: CPU核心数的一半）")
     
     try:
-        args = parser.parse_args()
-        setup_logging()  # 初始化日志
+        args = parser.parse_args()       
         action = args.action.lower()
         input_path = args.input_path
+        
         # 参数验证
         if action in ['pdf2images', 'png2dxf'] and not input_path:
             raise InputError("必须指定输入路径")  
             
         # 加载配置文件
         config_manager.load_config(args.config)   
+        
+        # 创建处理参数
+        params = ProcessingParams(
+            dpi=args.dpi, 
+            format=args.format
+        )
+        
+        # 创建处理器
+        processor = Image2CADProcessor(params)
+        
         # 根据选择的 action 执行
         if action == 'pdf2images':
             Util.validate_extname(input_path, ['.pdf'])
             output_dir = args.output_path or Util.default_output_path(input_path, 'pdf_images')
-            pdf_to_images(input_path, output_dir, args.format, args.dpi)
+            pdf_to_images(
+                input_path, 
+                output_dir, 
+                args.format, 
+                args.dpi,
+                max_workers=args.workers
+            )
             
-        elif action.lower() in {'png2dxf'}:
+        elif action == 'png2dxf':
             Util.validate_extname(input_path, allow_imgExt)
-            output_dir = args.output_path or Util.default_output_path(input_path, 'cad')
-            if action == 'png2dxf':
-                png_to_dxf(input_path, output_dir)        
+            output_path = args.output_path or Util.default_output_path(input_path, 'cad')
+            
+            # 直接使用 Image2CADProcessor 的方法
+            processor = Image2CADProcessor(params)
+            if os.path.isdir(input_path):
+                processor.process_batch(
+                    input_path, 
+                    output_path,
+                    max_workers=args.workers
+                )
+            else:
+                processor.process_file(input_path, output_path)
+                
         else:
             print("请输入正确的命令")
+            parser.print_help()
             
     except argparse.ArgumentError as e:
         log_mgr.log_error(f"参数错误: {e}")

@@ -12,9 +12,8 @@ from celery.exceptions import Ignore
 import time
 from src.processors.image2cad import pdf_to_images, png_to_dxf
 from celery.signals import task_revoked
-from src.common.config_manager import ConfigManager
+from src.common.config_manager import config_manager
 
-config_manager = ConfigManager.get_instance()
 # 创建Celery应用
 app = Celery('celery_tasks', broker='redis://localhost:6379/0', backend='redis://localhost:6379/0')
 

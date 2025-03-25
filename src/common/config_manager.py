@@ -6,11 +6,9 @@ from threading import Lock
 import configparser
 import argparse
 from cryptography.fernet import Fernet
-from src.common.log_manager import LogManager, setup_logging
+from src.common.log_manager import LogManager, log_mgr
 from src.common.utils import Util
 from src.common.errors import ProcessingError, InputError, ResourceError, TimeoutError
-
-log_mgr = LogManager().get_instance()
 class ConfigManager:
     _instance = None
     _config = None
@@ -21,7 +19,7 @@ class ConfigManager:
         with cls._lock:
             if cls._instance is None:
                 cls._instance = super(ConfigManager, cls).__new__(cls)
-                cls.logger = LogManager().get_instance()
+                cls.logger = log_mgr
                 cls._instance._initialized = False  
                 cls._instance.__init__()
             return cls._instance
@@ -37,27 +35,40 @@ class ConfigManager:
             instance = ConfigManager()  # 确保初始化
             if ConfigManager._config is None:  # 如果还是None，说明需要显式初始化
                 instance.__init__()
-        return ConfigManager._config
-        
-    @staticmethod
-    def get_max_workers():
-        config = ConfigManager.get_config()
-        return config.getint('DEFAULT', 'max_workers', fallback=4)
-        
-    @staticmethod
-    def get_task_timeout():
+        return ConfigManager._config        
+    
+    def get_max_workers(self):
+        config = self.get_config()
+        return config.getint('DEFAULT', 'max_workers', fallback=4)        
+   
+    def get_task_timeout(self):
         """获取任务超时时间（分钟）"""
-        config = ConfigManager.get_config()
-        return config.getint('DEFAULT', 'task_timeout_minutes', fallback=30)
+        config = self.get_config()
+        return config.getint('DEFAULT', 'task_timeout_minutes', fallback=30)    
+   
+    def _decrypt_value(self, value: str) -> str:
+        """解密配置值
+        Args:
+            value: 待解密的字符串
+        Returns:
+            解密后的字符串，如果解密失败则返回原值
+        """
+        try:
+            if not value:
+                return value
+                
+            # 尝试解密
+            decrypted = self._cipher.decrypt(value.encode())
+            return decrypted.decode()
+            
+        except Exception as e:
+            # 解密失败时记录错误并返回原值
+            print(f"解密失败: {str(e)}")
+            return value    
     
-    @staticmethod
-    def _decrypt_value(value: str) -> str:
-        return ConfigManager._cipher.decrypt(value.encode()).decode()
-    
-    @staticmethod
-    def get_allow_imgExt():
+    def get_allow_imgExt(self):
         """从初始化配置中获取允许的图片扩展名"""
-        return {'.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif'}
+        return {'.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.webp'}
     
     def __init__(self):
         """初始化配置"""
@@ -106,9 +117,28 @@ class ConfigManager:
             pass
         
     
-    def _get_default_fallback(self, key):
-        """从初始化配置中获取统一默认值"""
-        return self._defaults.get(key, None)
+    def _get_default_fallback(self, key: str):
+        """获取默认值，增加类型检查
+        Args:
+            key: 配置键名
+        Returns:
+            默认值
+        """
+        if not hasattr(self, '_defaults'):
+            self._defaults = {
+                'tesseract_path': '',
+                'potrace_path': '',
+                'log_level': 'INFO',
+                'max_workers': max(1, os.cpu_count() // 2),
+                'pdf_export_dpi': 200,
+                'pdf_scale': 2.0,
+                'pdf_grayscale': True,
+                'pdf_output_dir': './pdf_images',
+                'max_image_pixels': 256_000_000,
+                'interpolation_distance': 3,
+                'ocr_mode': 'normal',
+            }
+        return self._defaults.get(key)
      
     def load_config(self, config_path: str) -> None:
         """加载指定配置文件"""
@@ -119,42 +149,58 @@ class ConfigManager:
         self._config.read(config_path)    
    
     def get_setting(self, key: str, section: str = 'DEFAULT', fallback=None):
-        """带类型转换和安全回退的获取方法"""
+        """获取配置项，增强错误处理和类型转换
+        Args:
+            key: 配置键名
+            section: 配置区段名，默认为 DEFAULT
+            fallback: 默认值
+        Returns:
+            转换后的配置值
+        """
         try:
-            # 确保fallback不为None
-            safe_fallback = fallback if fallback is not None else self._get_default_fallback(key)
-            if section != 'DEFAULT' and not self._config.has_section(section):
-                raise configparser.NoSectionError(section)
-            value = self._config.get(section, key)
+            # 参数验证
+            if not isinstance(key, str) or not key.strip():
+                raise ValueError(f"无效的配置键名: {key}")
             
-            # 处理空字符串情况
-            if value.strip() == '':
-                raise ValueError("空值")
-                
-            # 自动类型转换
-            if value.lower() in ('true', 'false'):
-                return value.lower() == 'true'
-                
+            if not isinstance(section, str) or not section.strip():
+                raise ValueError(f"无效的配置区段名: {section}")
+            
+            # 获取安全的默认值
+            safe_fallback = fallback if fallback is not None else self._get_default_fallback(key)
+            
+            # 检查配置区段
+            if section != 'DEFAULT' and not self._config.has_section(section):
+                log_mgr.log_warn(f"配置区段[{section}]不存在，使用默认值: {safe_fallback}")
+                return safe_fallback
+            
+            # 获取配置值
+            value = self._config.get(section, key, fallback=None)
+            if value is None:
+                return safe_fallback
+            
+            # 空值处理
+            if not value.strip():
+                return safe_fallback
+            
+            # 类型转换
+            return self._convert_value_type(value)
+            
+        except Exception as e:
+            log_mgr.log_error(f"获取配置[{section}].{key}失败: {str(e)}")
+            return safe_fallback
+    
+    def set_setting(self, key: str, value, section: str = 'DEFAULT'):
+        """线程安全的配置更新"""
+        with self._lock:
             try:
-                return int(value)
-            except ValueError:
-                try:
-                    return float(value)
-                except ValueError:
-                    return value
-        except (configparser.NoSectionError, configparser.NoOptionError) as e:            
-            log_mgr.log_warn(f"配置[{section}].{key} 不存在，使用回退值: {safe_fallback}")
-            return safe_fallback    
-   
-    def set_setting(self, key: str, value, section: str = 'DEFAULT'):      
-        """更新配置项并保存"""
-        if section == "DEFAULT":  # 直接写入 DEFAULT
-            self._config["DEFAULT"][key] = str(value)
-        else:
-            if not self._config.has_section(section):
-                self._config.add_section(section)
-            self._config.set(section, key, str(value))       
-        self._save_config()                       
+                if section != "DEFAULT":
+                    if not self._config.has_section(section):
+                        self._config.add_section(section)
+                self._config[section][key] = str(value)
+                self._save_config()
+            except Exception as e:
+                log_mgr.log_error(f"更新配置失败: {str(e)}")
+                raise               
     
     def get_tesseract_path(self) -> str:
         """获取Tesseract路径"""
@@ -204,10 +250,9 @@ class ConfigManager:
         path = self._config.get('DEFAULT', 'potrace_path', fallback='')
         if not path:
             path = self._auto_detect_potrace()
-        return self.normalize_path(path)    
+        return self.normalize_path(path)        
     
-    @staticmethod
-    def _auto_detect_tesseract() -> str:
+    def _auto_detect_tesseract(self) -> str:
         """自动检测Tesseract路径"""
         common_paths = [
             '/usr/bin/tesseract',  # Linux
@@ -312,10 +357,9 @@ class ConfigManager:
     
     def get_file_retention_days(self) -> int:
         """获取文件保留天数"""
-        return int(self.get_setting('file_retention_days', fallback=7))
+        return int(self.get_setting('file_retention_days', fallback=7))    
     
-    @staticmethod
-    def check_system_requirements():
+    def check_system_requirements(self):
         """系统环境检查"""
         checks = [
             ('Tesseract OCR', config_manager.get_tesseract_path()),
@@ -332,10 +376,9 @@ class ConfigManager:
         if all(status for _, status in checks):
             print("\n环境检查通过")
         else:
-            print("\n警告：存在缺失的依赖项")
+            print("\n警告：存在缺失的依赖项")    
     
-    @staticmethod
-    def get_rapidocr_params(mode='normal'):
+    def get_rapidocr_params(self, mode='normal'):
         """获取OCR参数配置
         Args:
             mode (str): 'fast', 'normal', 或 'best'
@@ -433,9 +476,8 @@ class ConfigManager:
         }
         
         return params_map.get(mode, normal_params)
-
-    @staticmethod
-    def get_rapidocr_runtime_params(mode='normal'):
+   
+    def get_rapidocr_runtime_params(self, mode='normal'):
         """获取OCR运行时参数
         Args:
             mode (str): 'fast', 'normal', 或 'best'
@@ -448,6 +490,125 @@ class ConfigManager:
             'best': (0.05, 0.15, 3.0)
         }
         return mode_thresholds.get(mode, mode_thresholds['normal'])
+
+    def _convert_value_type(self, value: str):
+        """智能类型转换配置值
+        Args:
+            value: 要转换的字符串值
+        Returns:
+            转换后的值
+        """
+        if not isinstance(value, str):
+            return value
+            
+        # 去除首尾空格
+        value = value.strip()
+        
+        # 布尔值处理
+        if value.lower() in ('true', 'yes', 'on', '1'):
+            return True
+        if value.lower() in ('false', 'no', 'off', '0'):
+            return False
+        
+        # 数值处理
+        try:
+            if '.' in value:
+                return float(value)
+            return int(value)
+        except ValueError:
+            pass
+        
+        # 列表处理
+        if value.startswith('[') and value.endswith(']'):
+            try:
+                items = [item.strip() for item in value[1:-1].split(',')]
+                return [self._convert_value_type(item) for item in items if item]
+            except:
+                pass
+        
+        # 默认返回字符串
+        return value
+
+    def validate_config(self):
+        """验证所有配置项的有效性"""
+        try:
+            # 验证必要路径
+            self._validate_paths()
+            
+            # 验证数值范围
+            self._validate_numeric_ranges()
+            
+            # 验证目录权限
+            self._validate_directories()
+            
+            # 验证系统资源
+            self._validate_system_resources()
+            
+            return True
+        except Exception as e:
+            log_mgr.log_error(f"配置验证失败: {str(e)}")
+            return False
+
+    def _validate_paths(self):
+        """验证路径配置"""
+        required_paths = {
+            'tesseract_path': '未找到Tesseract执行文件',
+            'potrace_path': '未找到Potrace执行文件'
+        }
+        
+        for key, error_msg in required_paths.items():
+            path = self.get_setting(key)
+            if not path or not Path(path).exists():
+                raise ValueError(f"{error_msg}: {path}")
+
+    def _encrypt_sensitive_value(self, value: str) -> str:
+        """加密敏感配置值"""
+        try:
+            if not value or not isinstance(value, str):
+                return value
+            
+            if not hasattr(self, '_cipher'):
+                key = Fernet.generate_key()
+                self._cipher = Fernet(key)
+            
+            return self._cipher.encrypt(value.encode()).decode()
+        except Exception as e:
+            log_mgr.log_error(f"加密失败: {str(e)}")
+            return value
+
+    def set_secure_setting(self, key: str, value: str, section: str = 'DEFAULT'):
+        """设置加密的配置项"""
+        encrypted_value = self._encrypt_sensitive_value(value)
+        self.set_setting(key, encrypted_value, section)
+
+    def backup_config(self):
+        """备份当前配置"""
+        try:
+            backup_path = Path(self._config_path).with_suffix('.bak')
+            with open(backup_path, 'w') as f:
+                self._config.write(f)
+            return str(backup_path)
+        except Exception as e:
+            log_mgr.log_error(f"配置备份失败: {str(e)}")
+            return None
+
+    def restore_config(self, backup_path: str = None):
+        """从备份恢复配置"""
+        try:
+            if not backup_path:
+                backup_path = Path(self._config_path).with_suffix('.bak')
+            if not Path(backup_path).exists():
+                raise FileNotFoundError(f"备份文件不存在: {backup_path}")
+            
+            self._config.read(backup_path)
+            self._save_config()
+            return True
+        except Exception as e:
+            log_mgr.log_error(f"配置恢复失败: {str(e)}")
+            return False
+
+# 全局单例
+config_manager = ConfigManager.get_instance()
 
 if __name__ == "__main__":
     # 设置命令行参数解析器
@@ -465,10 +626,7 @@ if __name__ == "__main__":
                        help="输入文件/目录路径（对set操作为工具路径）")  
     parser.add_argument('--config', default='config.ini',
                        help="指定配置文件路径（默认: ./config.ini）")   
-    try:
-        config_manager = ConfigManager.get_instance()
-        setup_logging()  # 初始化日志
-         
+    try:    
         args = parser.parse_args()     
         action = args.action.lower()  
         if action == 'set-tesseract' and not args.input_path:
@@ -498,4 +656,4 @@ if __name__ == "__main__":
         sys.exit(1)
     except Exception as e:
         log_mgr.log_error(f"运行错误: {str(e)}")
-        sys.exit(2)
+        sys.exit(2)        
