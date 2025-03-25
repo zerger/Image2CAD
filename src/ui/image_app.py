@@ -6,12 +6,14 @@ import argparse
 from tkinter import Tk, Button, Canvas, PhotoImage, Scale, HORIZONTAL, font
 from PIL import Image, ImageTk
 import threading
-from ocrProcess import OCRProcess 
-from util import Util
+from src.processors.ocr_processor import OCRProcess 
+from src.common.config_manager import ConfigManager
+from src.common.utils import Util
 import uuid
 from pathlib import Path
 import tempfile
 
+config_manager = ConfigManager.get_instance()
 class ImageApp:
     def __init__(self, root, image_path):
         self.root = root
@@ -166,8 +168,8 @@ class ImageApp:
                 Util.opencv_write(selected_region, temp_path)
             
             # Initialize OCR processor
-            ocr_processor = OCRProcess()
-            self.text_positions, _ = ocr_processor.get_file_rapidOCR(temp_path, scale_factor=5, max_block_size=512, overlap=20)
+            ocr_processor = OCRProcess(config_manager.get_ocr_mode())
+            self.text_positions, _ = ocr_processor.get_file_rapidOCR(temp_path, scale_factor=2)
             
             # Display results (for demonstration, just print)
             print("Recognized text positions:", self.text_positions)

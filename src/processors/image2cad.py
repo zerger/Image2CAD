@@ -131,7 +131,7 @@ def process_single_file(input_path: str, output_folder: str) -> Tuple[bool, Opti
         start_time = time.time()
         # OCR处理       
         log_mgr.log_info("执行OCR处理...")
-        ocr_process = OCRProcess()      
+        ocr_process = OCRProcess(config_manager.get_ocr_mode())      
         text_positions = ocr_process.get_file_rapidOCR(input_path, scale_factor=2) 
         log_mgr.log_processing_time("OCR处理", start_time)
         start_time = time.time()

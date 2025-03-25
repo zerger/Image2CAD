@@ -25,53 +25,20 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 log_mgr = LogManager().get_instance()
 config_manager = ConfigManager.get_instance()
 class OCRProcess:
-    def __init__(self):
+    def __init__(self, mode='normal'):
         # 初始化 RapidOCR
         log_mgr.log_info("初始化OCR引擎...")
-        start_time = time.time()
+        start_time = time.time()       
+        # 获取OCR参数配置并初始化引擎
+        self.params = ConfigManager.get_rapidocr_params(mode)
+        self.engine = RapidOCR(params=self.params)
+        self.mode = mode
         
-        # 初始化参数配置
-        params = {
-            # 全局参数 - 进一步优化
-            "Global.text_score": 0.05,          # 进一步降低阈值，捕获更多文本
-            "Global.use_det": True,
-            "Global.use_cls": True,
-            "Global.use_rec": True,
-            "Global.max_side_len": 16384,       # 更大的尺寸限制，保持更多细节
-            "Global.min_side_len": 2,           # 更小的限制，捕获极小文本
-            
-            # 检测参数 - 极致检测
-            "Det.box_thresh": 0.15,             # 进一步降低检测阈值
-            "Det.unclip_ratio": 3.0,            # 更大的扩张比例，避免文字断开
-            "Det.det_db_thresh": 0.05,          # 更低的二值化阈值，检测浅色文本
-            "Det.det_db_box_thresh": 0.05,      # 匹配二值化阈值
-            "Det.det_db_unclip_ratio": 3.0,     # 匹配扩张比例
-            "Det.det_limit_side_len": 16384,    # 检测时的最大尺寸
-            "Det.det_limit_type": "max",        # 使用最大边限制
-            
-            # 识别参数 - 极致精度
-            "Rec.rec_batch_num": 1,             # 保持单张处理
-            "Rec.rec_thresh": 0.05,             # 更低的识别阈值
-            "Rec.min_height": 2,                # 更小的高度限制
-            "Rec.max_height": 4096,             # 更大的高度限制
-            "Rec.min_width": 2,                 # 更小的宽度限制
-            "Rec.max_width": 4096,              # 更大的宽度限制
-            "Rec.rec_image_shape": "3, 96, 960", # 更大的识别输入尺寸
-            "Rec.rec_char_dict_path": None,     # 使用默认字典
-            "Rec.rec_algorithm": "SVTR_LCNet",  # 使用更准确的识别算法
-            
-            # 方向分类参数 - 更准确的分类
-            "Cls.cls_thresh": 0.95,             # 更高的分类置信度
-            "Cls.cls_batch_num": 1,             # 保持单张处理
-            "Cls.cls_model_path": None,         # 使用默认模型
-            
-            # 引擎配置 - 最高精度
-            "EngineConfig.use_fp16": False,     # 使用 FP32
-            "EngineConfig.enable_mkldnn": True, # 启用 MKL-DNN 加速
-            "EngineConfig.cpu_math_library_num_threads": 4  # CPU线程数
-        }
-
-        self.engine = RapidOCR(params=params)
+        # 记录初始化配置
+        log_mgr.log_info(f"\nOCR初始化配置：")
+        log_mgr.log_info(f"├─ 处理模式：{mode}")
+        log_mgr.log_info(f"├─ 最大边长：{self.params.get('Global.max_side_len', 'default')}")
+        log_mgr.log_info(f"└─ 识别算法：{self.params.get('Rec.rec_algorithm', 'default')}")
         
         init_time = time.time() - start_time
         log_mgr.log_info(f"初始化OCR引擎时间: {init_time:.2f}秒")
@@ -240,7 +207,7 @@ class OCRProcess:
             Util.opencv_write(block, block_path)
             
             # 对分块进行OCR识别
-            result = self.engine(block_path, use_det=True, use_cls=False, use_rec=False)
+            result = self.raidocr_process(block_path, use_det=True, use_cls=False, use_rec=False)
             
             # 检查 OCR 结果
             if result is None or not hasattr(result, 'boxes') or result.boxes is None:
@@ -280,7 +247,7 @@ class OCRProcess:
         # 假设竖向文本的长宽比大于 2
         return height / width > 2
         
-    def get_file_rapidOCR(self, input_image_path, scale_factor=5, bPreprocess = False, bAutoBlock = False):
+    def get_file_rapidOCR(self, input_image_path, scale_factor=2, bPreprocess = False, bAutoBlock = False):
         """
         使用 RapidOCR 进行OCR识别
         :param input_image_path: 输入图片路径
@@ -319,7 +286,7 @@ class OCRProcess:
         使用 RapidOCR 进行OCR识别
         :param image: 输入图片
         :param input_image_path: 输入图片路径
-        :param scale_factor: 放大倍数        
+        :param scale_factor: 放大倍数   
         """
         try:
             from rapidocr import RapidOCR
@@ -353,7 +320,7 @@ class OCRProcess:
         if bAutoBlock and max(original_height, original_width) > max_block_size:
             all_results = self._scale_det(scale_factor, preprocessed_img, temp_dir, max_block_size)               
         else:
-            all_results = self.engine(temp_path, use_det=True, use_cls=False, use_rec=False)     
+            all_results = self.raidocr_process(temp_path, use_det=True, use_cls=False, use_rec=False)     
         detection_time = time.time() - start_time
         log_mgr.log_info(f"OCR检测处理时间: {detection_time:.2f}秒")
         
@@ -450,7 +417,7 @@ class OCRProcess:
                     Util.opencv_write(scaled_region, block_path)
                     
                     # Recognize text in the cropped region
-                    recognition_results = self.engine(block_path, use_det=False, use_cls=True, use_rec=True)
+                    recognition_results = self.raidocr_process(block_path, use_det=False, use_cls=True, use_rec=True)
                     
                     # 处理识别结果
                     result_txt = ""
@@ -663,7 +630,7 @@ class OCRProcess:
         #wb_img = Path(img_dir) / f"{img_name}_wb.png"
         #OCRProcess.ensure_white_background(input_path, wb_img)
         
-        config_manager.set_tesseract_mode("best")
+        config_manager.set_ocr_mode("best")
         # 获取可执行路径
         tesseract_exe = config_manager.get_tesseract_path()
         tessdata_dir = config_manager.get_tesseract_data_path()  # 语言包目录
@@ -1133,7 +1100,7 @@ class OCRProcess:
                 raise ValueError(f"未识别文本: {missing}")      
     
 
-    def process_single_file(self, input_path, output_folder, scale_factor=4, bPreprocess=False, bAutoBlock=False):
+    def process_single_file(self, input_path, output_folder, scale_factor=2, bPreprocess=False, bAutoBlock=False):
         """
         处理单个文件的OCR流程
 
@@ -1154,8 +1121,7 @@ class OCRProcess:
             base_name = Path(input_path).stem      
             start_time = time.time()
             # OCR处理       
-            log_mgr.log_info("执行OCR处理...")
-            ocr_process = OCRProcess() 
+            log_mgr.log_info("执行OCR处理...")            
             text_positions = ocr_process.get_file_rapidOCR(input_path, scale_factor, bPreprocess, bAutoBlock)      
             log_mgr.log_processing_time("OCR处理", start_time)
             start_time = time.time()      
@@ -1183,7 +1149,7 @@ class OCRProcess:
             log_mgr.log_exception(f"未处理的异常发生: {e}")
             return (input_path, False, None)
         
-    def ocr_process(self, input_path, output_folder=None, scale_factor=4, bPreprocess=False, bAutoBlock=False):
+    def ocr_process(self, input_path, output_folder=None, scale_factor=2, bPreprocess=False, bAutoBlock=False):
         """
         安全处理单个文件或文件夹的全流程
 
@@ -1202,9 +1168,7 @@ class OCRProcess:
         log_mgr.log_info("\n当前OCR识别参数：")
         log_mgr.log_info(f"├─ 输入图片路径：{input_path}")  
         log_mgr.log_info(f"├─ 输出目录：{output_folder}")
-        log_mgr.log_info(f"├─ 放大倍数：{scale_factor}")           
-        log_mgr.log_info(f"├─ 是否预处理：{bPreprocess}")
-        log_mgr.log_info(f"├─ 是否自动分块：{bAutoBlock}")
+        log_mgr.log_info(f"├─ 放大倍数：{scale_factor}")      
 
         # 检查输入路径是文件还是文件夹
         if os.path.isdir(input_path):
@@ -1243,17 +1207,43 @@ class OCRProcess:
         
         return all_results   
         
+    def raidocr_process(self, image_path, use_det=None, use_cls=None, use_rec=None, **kwargs):
+        """OCR处理
+        Args:
+            image_path: 图像路径
+            use_det: 是否使用检测，覆盖配置参数
+            use_cls: 是否使用分类，覆盖配置参数
+            use_rec: 是否使用识别，覆盖配置参数
+        """
+        # 准备运行参数
+        run_params = {}
+        
+        # 如果传入了相应参数，则覆盖配置中的值
+        if use_det is not None:
+            run_params['use_det'] = use_det
+        if use_cls is not None:
+            run_params['use_cls'] = use_cls
+        if use_rec is not None:
+            run_params['use_rec'] = use_rec
+            
+        # 添加其他运行时参数
+        run_params.update(kwargs)
+        
+        # 执行OCR
+        return self.engine(image_path, **run_params)
+        
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ocr 工具")
     subparsers = parser.add_subparsers(dest='command')
 
-    # 添加 convert 子命令
-    convert_parser = subparsers.add_parser('ocr_process', help='ocr 识别')
-    convert_parser.add_argument('input_file', type=str, help='输入文件(路径)')
-    convert_parser.add_argument('output_path', type=str, help='输出路径')  
-    convert_parser.add_argument('--scale_factor', type=int, default=2, help='放大倍数')      
-    convert_parser.add_argument('--bPreprocess', type=bool, default=False, help='是否预处理')      
-    convert_parser.add_argument('--bAutoBlock', type=bool, default=False, help='是否自动分块')      
+    # 添加 ocr_process 子命令
+    ocr_parser = subparsers.add_parser('ocr_process', help='ocr 识别')
+    ocr_parser.add_argument('input_file', type=str, help='输入文件(路径)')
+    ocr_parser.add_argument('output_path', type=str, help='输出路径')  
+    ocr_parser.add_argument('--scale_factor', type=int, default=2, help='放大倍数')      
+    ocr_parser.add_argument('--bPreprocess', type=bool, default=False, help='是否预处理')      
+    ocr_parser.add_argument('--bAutoBlock', type=bool, default=False, help='是否自动分块')   
+    ocr_parser.add_argument("--mode", choices=["fast", "normal", "best"], default='normal', help="OCR处理模式")   
     
      # OCR参数组
     ocr_group = parser.add_argument_group('OCR参数')
@@ -1264,9 +1254,14 @@ if __name__ == "__main__":
     # 解析命令行参数
     args = parser.parse_args()
 
-    ocr_process = OCRProcess()
+    ocr_process = OCRProcess(mode=args.mode)
     if args.command == 'ocr_process':
         output_dir = args.output_path or Util.default_output_path(args.input_file, 'ocr')
-        ocr_process.ocr_process(args.input_file, output_dir, args.scale_factor, args.bPreprocess, args.bAutoBlock)
+        result = ocr_process.ocr_process(args.input_file, output_dir, args.scale_factor, args.bPreprocess, args.bAutoBlock)
+        if result:
+            log_mgr.log_info("OCR处理完成")
+            # 这里可以添加结果处理代码
+        else:
+            log_mgr.log_error("OCR处理失败")
     else:
         print("请输入正确的命令")

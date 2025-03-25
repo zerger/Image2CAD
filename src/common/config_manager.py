@@ -76,6 +76,7 @@ class ConfigManager:
                 'pdf_output_dir': './pdf_images',
                 'max_image_pixels': 256_000_000,
                 'interpolation_distance': 3, 
+                'ocr_mode': 'normal',
             }
             self._config['DEFAULT'] = {
                 k: str(v) if isinstance(v, (int, float)) else v 
@@ -169,23 +170,23 @@ class ConfigManager:
         self._config['DEFAULT']['tesseract_path'] = path
         self._save_config()    
         
-    def set_tesseract_mode(self, mode: str) -> None:
+    def set_ocr_mode(self, mode: str) -> None:
         if mode in ["fast", "normal", "best"]:           
-            self._config['DEFAULT']['tesseract_mode'] = mode
+            self._config['DEFAULT']['ocr_mode'] = mode
             self._save_config()    
         else:
             raise ValueError("Invalid mode. Choose from 'fast', 'normal', 'best'.")
 
-    def get_tesseract_mode(self) -> str:
-        mode = self._config.get('DEFAULT', 'tesseract_mode', fallback='')
+    def get_ocr_mode(self) -> str:
+        mode = self._config.get('DEFAULT', 'ocr_mode', fallback='')
         if mode in ["fast", "normal", "best"]:  
             return mode 
         else:
             return "normal"
         
     def get_tesseract_data_path(self) -> str:       
-        tesseract_mode = self.get_tesseract_mode()
-        return self.set_tesseract_data_path_mode(tesseract_mode)      
+        ocr_mode = self.get_ocr_mode()
+        return self.set_tesseract_data_path_mode(ocr_mode)      
    
     def set_tesseract_data_path_mode(self, mode) -> str:
         tesseract_exe = self.get_tesseract_path()       
@@ -333,6 +334,121 @@ class ConfigManager:
         else:
             print("\n警告：存在缺失的依赖项")
     
+    @staticmethod
+    def get_rapidocr_params(mode='normal'):
+        """获取OCR参数配置
+        Args:
+            mode (str): 'fast', 'normal', 或 'best'
+        Returns:
+            dict: OCR参数配置
+        """
+        # 基础参数配置
+        base_params = {
+            "Global.use_det": True,
+            "Global.use_cls": True,
+            "Global.use_rec": True,
+        }
+        
+        # 快速模式 - 优先速度
+        fast_params = {
+            **base_params,
+            "Global.text_score": 0.3,
+            "Global.max_side_len": 2048,
+            "Global.min_side_len": 8,
+            
+            "Det.box_thresh": 0.3,
+            "Det.unclip_ratio": 1.6,
+            "Det.det_db_thresh": 0.3,
+            "Det.det_db_box_thresh": 0.3,
+            "Det.det_limit_side_len": 2048,
+            
+            "Rec.rec_batch_num": 6,
+            "Rec.rec_thresh": 0.3,
+            "Rec.rec_image_shape": "3, 32, 320",
+            
+            "Cls.cls_thresh": 0.9,
+            "Cls.cls_batch_num": 6,
+            
+            "EngineConfig.use_fp16": True,
+            "EngineConfig.enable_mkldnn": True,
+            "EngineConfig.cpu_math_library_num_threads": 4
+        }
+        
+        # 普通模式 - 平衡速度和精度
+        normal_params = {
+            **base_params,
+            "Global.text_score": 0.2,
+            "Global.max_side_len": 4096,
+            "Global.min_side_len": 4,
+            
+            "Det.box_thresh": 0.25,
+            "Det.unclip_ratio": 2.0,
+            "Det.det_db_thresh": 0.2,
+            "Det.det_db_box_thresh": 0.2,
+            "Det.det_limit_side_len": 4096,
+            
+            "Rec.rec_batch_num": 3,
+            "Rec.rec_thresh": 0.2,
+            "Rec.rec_image_shape": "3, 48, 640",
+            
+            "Cls.cls_thresh": 0.9,
+            "Cls.cls_batch_num": 3,
+            
+            "EngineConfig.use_fp16": False,
+            "EngineConfig.enable_mkldnn": True,
+            "EngineConfig.cpu_math_library_num_threads": 4
+        }
+        
+        # 精细模式 - 优先精度
+        best_params = {
+            **base_params,
+            "Global.text_score": 0.05,
+            "Global.max_side_len": 16384,
+            "Global.min_side_len": 2,
+            
+            "Det.box_thresh": 0.15,
+            "Det.unclip_ratio": 3.0,
+            "Det.det_db_thresh": 0.05,
+            "Det.det_db_box_thresh": 0.05,
+            "Det.det_limit_side_len": 16384,
+            
+            "Rec.rec_batch_num": 1,
+            "Rec.rec_thresh": 0.05,
+            "Rec.rec_image_shape": "3, 96, 960",
+            "Rec.rec_algorithm": "SVTR_LCNet",
+            
+            "Cls.cls_thresh": 0.95,
+            "Cls.cls_batch_num": 1,
+            
+            "EngineConfig.use_fp16": False,
+            "EngineConfig.enable_mkldnn": True,
+            "EngineConfig.cpu_math_library_num_threads": 4
+        }
+        
+        # 根据模式选择参数
+        params_map = {
+            'fast': fast_params,
+            'normal': normal_params,
+            'best': best_params
+        }
+        
+        return params_map.get(mode, normal_params)
+
+    @staticmethod
+    def get_rapidocr_runtime_params(mode='normal'):
+        """获取OCR运行时参数
+        Args:
+            mode (str): 'fast', 'normal', 或 'best'
+        Returns:
+            tuple: (text_score, box_thresh, unclip_ratio)
+        """
+        mode_thresholds = {
+            'fast': (0.3, 0.3, 1.6),
+            'normal': (0.2, 0.25, 2.0),
+            'best': (0.05, 0.15, 3.0)
+        }
+        return mode_thresholds.get(mode, mode_thresholds['normal'])
+
 if __name__ == "__main__":
     # 设置命令行参数解析器
     parser = argparse.ArgumentParser(description="配置工具")

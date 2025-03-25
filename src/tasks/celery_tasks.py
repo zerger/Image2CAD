@@ -12,7 +12,9 @@ from celery.exceptions import Ignore
 import time
 from src.processors.image2cad import pdf_to_images, png_to_dxf
 from celery.signals import task_revoked
+from src.common.config_manager import ConfigManager
 
+config_manager = ConfigManager.get_instance()
 # 创建Celery应用
 app = Celery('celery_tasks', broker='redis://localhost:6379/0', backend='redis://localhost:6379/0')
 
@@ -99,9 +101,12 @@ def convert_pdf_to_images(self, pdf_path, output_dir=None, dpi=None):
         raise
 
 @app.task(bind=True)
-def ocr_image(self, image_path, output_dir=None):
+def ocr_image(self, image_path, scale_factor=2, mode='normal', output_dir=None):
     """OCR图像识别任务，支持进度报告"""
     try:
+          # 导入OCR处理模块
+        from src.processors.ocr_processor import OCRProcess
+        
         print(f"OCR processing {image_path} to {output_dir}")
         
         # 更新任务状态为开始处理
@@ -111,12 +116,9 @@ def ocr_image(self, image_path, output_dir=None):
                                'input': image_path,
                                'output': output_dir})
         
-        # 导入OCR处理模块
-        from src.processors.ocr_processor import OCRProcess
-        ocr_process = OCRProcess()
-        ocr_process = OCRProcess()
-        parsed_results, original_height = ocr_process.get_file_rapidOCR(image_path)
-
+      
+        ocr_process = OCRProcess(mode)      
+        parsed_results, original_height = ocr_process.get_file_rapidOCR(image_path, scale_factor)
         # 更新任务状态为完成
         self.update_state(state='SUCCESS',
                          meta={'progress': 100,
